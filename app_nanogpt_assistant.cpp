@@ -19,6 +19,7 @@
 
 #include "app_nanogpt_assistant.h"
 #include "assistant_config.h"
+#include "assistant_tool_schema.h"
 #include "assistant_weather.h"
 #include "app_common.h"
 #include "audio_engine.h"
@@ -139,79 +140,6 @@ static bool wifiConnect() {
         { s_config.ssid[2], s_config.password[2] },
     };
     return wifi_try_connect(list, 3) >= 0;
-}
-
-// ── Custom tool declarations ────────────────────────────────────────────────
-// Each call adds one tool entry to the API request's tools[] array.
-static JsonObject toolDecl(JsonArray tools, const char *name, const char *desc) {
-    JsonObject t = tools.add<JsonObject>();
-    t["type"] = "function";
-    JsonObject fn = t["function"].to<JsonObject>();
-    fn["name"]        = name;
-    fn["description"] = desc;
-    JsonObject schema = fn["parameters"].to<JsonObject>();
-    schema["type"] = "object";
-    schema["properties"].to<JsonObject>();   // empty by default
-    return t;
-}
-
-static void addCustomTools(JsonArray tools) {
-    toolDecl(tools, "get_time",
-        "Returns the current local date and time on the device.");
-    toolDecl(tools, "get_battery_status",
-        "Returns battery percentage and charging state.");
-    toolDecl(tools, "get_uptime",
-        "Returns how long the device has been running since the last boot.");
-    toolDecl(tools, "get_wifi_info",
-        "Returns the WiFi network name and signal strength.");
-    toolDecl(tools, "get_orientation",
-        "Returns the device tilt (pitch and roll in degrees) and a friendly description such as 'face up' or 'on its side'.");
-
-    {
-        JsonObject t = toolDecl(tools, "set_brightness",
-            "Sets the screen brightness. Percent 0-100 (0=off, 100=max).");
-        JsonObject props = t["function"]["parameters"]["properties"].as<JsonObject>();
-        JsonObject p = props["percent"].to<JsonObject>();
-        p["type"]        = "integer";
-        p["description"] = "Brightness percent 0-100";
-        JsonArray req = t["function"]["parameters"]["required"].to<JsonArray>();
-        req.add("percent");
-    }
-    {
-        JsonObject t = toolDecl(tools, "play_beep",
-            "Plays a short beep through the speaker.");
-        JsonObject props = t["function"]["parameters"]["properties"].as<JsonObject>();
-        JsonObject f = props["frequency_hz"].to<JsonObject>();
-        f["type"]        = "integer";
-        f["description"] = "Tone frequency in Hz (default 1000, 100-8000).";
-        JsonObject d = props["duration_ms"].to<JsonObject>();
-        d["type"]        = "integer";
-        d["description"] = "Duration in milliseconds (default 200, max 2000).";
-    }
-    toolDecl(tools, "restart_device",
-        "Reboots the device. Only call when the user explicitly asks to restart.");
-    toolDecl(tools, "power_off",
-        "Powers the device off. Only call when the user explicitly asks to shut down.");
-    toolDecl(tools, "get_weather",
-        "Returns the current weather (temperature, conditions, wind, humidity) for the device's configured location.");
-    {
-        JsonObject t = toolDecl(tools, "save_note",
-            "Saves a short text note to today's note file on the SD card.");
-        JsonObject props = t["function"]["parameters"]["properties"].as<JsonObject>();
-        JsonObject txt = props["text"].to<JsonObject>();
-        txt["type"]        = "string";
-        txt["description"] = "The note text to save (single line).";
-        JsonArray req = t["function"]["parameters"]["required"].to<JsonArray>();
-        req.add("text");
-    }
-    {
-        JsonObject t = toolDecl(tools, "list_recent_notes",
-            "Lists the most recent notes from today's note file.");
-        JsonObject props = t["function"]["parameters"]["properties"].as<JsonObject>();
-        JsonObject c = props["count"].to<JsonObject>();
-        c["type"]        = "integer";
-        c["description"] = "How many recent notes to return (default 5, max 20).";
-    }
 }
 
 // ── Tool implementations ────────────────────────────────────────────────────
@@ -538,7 +466,7 @@ static String nanogptChat(const String &userMessage) {
     }
 
     JsonArray tools = doc["tools"].to<JsonArray>();
-    addCustomTools(tools);
+    assistant_tool_schema_add_to(tools);
 
     JsonArray msgs = doc["messages"].to<JsonArray>();
     JsonObject sys = msgs.add<JsonObject>();

@@ -1,4 +1,5 @@
 #include "../assistant_config.h"
+#include "../assistant_tool_schema.h"
 #include "../assistant_weather.h"
 #include "../audio_wav.h"
 #include "../conversation_history.h"
@@ -157,6 +158,45 @@ static void testWeatherDescriptions() {
     assert(strcmp(weather_wmo_description(1234), "unknown conditions") == 0);
 }
 
+static const AssistantToolSchema *findTool(const char *name) {
+    size_t count = 0;
+    const AssistantToolSchema *tools = assistant_tool_schemas(&count);
+    for (size_t i = 0; i < count; i++) {
+        if (strcmp(tools[i].name, name) == 0) return &tools[i];
+    }
+    return nullptr;
+}
+
+static void testToolSchemaRegistry() {
+    size_t count = 0;
+    const AssistantToolSchema *tools = assistant_tool_schemas(&count);
+    assert(tools != nullptr);
+    assert(count == 12);
+    assert(strcmp(tools[0].name, "get_time") == 0);
+    assert(strcmp(tools[count - 1].name, "list_recent_notes") == 0);
+
+    const AssistantToolSchema *brightness = findTool("set_brightness");
+    assert(brightness != nullptr);
+    assert(brightness->paramCount == 1);
+    assert(strcmp(brightness->params[0].name, "percent") == 0);
+    assert(brightness->params[0].type == ASSISTANT_TOOL_PARAM_INTEGER);
+    assert(brightness->params[0].required);
+
+    const AssistantToolSchema *beep = findTool("play_beep");
+    assert(beep != nullptr);
+    assert(beep->paramCount == 2);
+    assert(strcmp(beep->params[0].name, "frequency_hz") == 0);
+    assert(!beep->params[0].required);
+    assert(strcmp(beep->params[1].name, "duration_ms") == 0);
+    assert(!beep->params[1].required);
+
+    const AssistantToolSchema *saveNote = findTool("save_note");
+    assert(saveNote != nullptr);
+    assert(saveNote->paramCount == 1);
+    assert(saveNote->params[0].type == ASSISTANT_TOOL_PARAM_STRING);
+    assert(saveNote->params[0].required);
+}
+
 int main() {
     testConfigDefaults();
     testConfigValueExtraction();
@@ -166,6 +206,7 @@ int main() {
     testConversationHistory();
     testConversationHistoryByteBudget();
     testWeatherDescriptions();
+    testToolSchemaRegistry();
     puts("pure tests passed");
     return 0;
 }
