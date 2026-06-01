@@ -7,7 +7,7 @@
  *   The exclusion is circular: dist from corner centre < 50 px.
  *
  * Battery HUD — 3-bar monochrome icon, top-right, outside R=50 zone.
- * Watermark   — "www.app-pixels.com" centred at bottom.
+ * Watermark   — "nano-gpt.com" centred at bottom.
  * Pill labels — anchored to physical button positions, 90° rotated in portrait.
  */
 
@@ -409,7 +409,7 @@ void draw_battery_p(Arduino_SH8601 *gfx) {
 }
 
 void draw_watermark_p(Arduino_SH8601 *gfx) {
-    const char *wm = "www.app-pixels.com";
+    const char *wm = "nano-gpt.com";
     int16_t tw = (int16_t)(strlen(wm) * 12);
     gfx->setTextSize(2);
     gfx->setTextColor(HUD_COL_WMK);
@@ -427,7 +427,7 @@ void draw_battery_l(Arduino_Canvas *canvas) {
 }
 
 void draw_watermark_l(Arduino_Canvas *canvas) {
-    const char *wm = "www.app-pixels.com";
+    const char *wm = "nano-gpt.com";
     int16_t tw = (int16_t)(strlen(wm) * 12);
     canvas->setTextSize(2);
     canvas->setTextColor(HUD_COL_WMK);
@@ -442,7 +442,7 @@ void draw_battery_g(Arduino_GFX *gfx, int16_t w, int16_t /*h*/) {
 }
 
 void draw_watermark_g(Arduino_GFX *gfx, int16_t w, int16_t h) {
-    const char *wm = "www.app-pixels.com";
+    const char *wm = "nano-gpt.com";
     int16_t tw = (int16_t)(strlen(wm) * 12);
     gfx->setTextSize(2);
     gfx->setTextColor(HUD_COL_WMK);
@@ -547,7 +547,7 @@ void drawCircleAA(Arduino_GFX *gfx, int16_t cx, int16_t cy, int16_t r,
 
 void draw_mic_pill(Arduino_GFX *gfx, int16_t /*w*/, int16_t h) {
     // Plain vertical "MIC" text (no pill). Red. Moved up to clear the
-    // rounded-corner safe zone — the original pill was half-eaten by the
+    // rounded-corner safe zone; otherwise it is clipped by the
     // bottom-left corner curve.
     const uint16_t txCol = 0xF800;
     drawTextRotCCW(gfx, 8, h - 38, "MIC", txCol, 2, 2);

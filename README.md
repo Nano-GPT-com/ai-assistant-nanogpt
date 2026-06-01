@@ -10,7 +10,7 @@ Voice-to-text AI assistant — NanoGPT for speech-to-text and the reply. NanoGPT
 
 Voice-to-text assistant that uses **NanoGPT** for both speech-to-text and the reply. Hold **BOOT** to speak; release to get an answer.
 
-Sibling to [**AI Chat**](/apps/ai-chat) — same UI, same controls. The NanoGPT variant can call **device + web tools** to give grounded answers (battery, time, weather, notes, web search) instead of guessing.
+The assistant can call **device + web tools** to give grounded answers (battery, time, weather, notes, web search) instead of guessing.
 
 **Cost.** Depends on the NanoGPT model you select. Tool round-trips add another model call; web search has its own search charge. Check current pricing at [nano-gpt.com/pricing](https://nano-gpt.com/pricing).
 
@@ -40,7 +40,7 @@ Sibling to [**AI Chat**](/apps/ai-chat) — same UI, same controls. The NanoGPT 
 
 1. Go to [**nano-gpt.com/api**](https://nano-gpt.com/api).
 2. Sign in or create an account.
-3. Create an API key. Name it something like `esp32-app-pixels` so you can rotate it later.
+3. Create an API key. Name it something like `esp32-nanogpt-assistant` so you can rotate it later.
 4. Paste it into `/setup/setup.txt` on the SD card as:
    ```
    NANOGPT_KEY = your_nano_gpt_api_key
@@ -54,9 +54,7 @@ Sibling to [**AI Chat**](/apps/ai-chat) — same UI, same controls. The NanoGPT 
 
 ## Editing `setup.txt`
 
-The device reads `/setup/setup.txt` from the SD card on boot. [Download a working sample](https://sosbxffigpteqilpgxwn.supabase.co/storage/v1/object/public/app-assets/setup/setup.txt) — covers every app — and edit the keys you need.
-
-Don't want to eject the card? Use the [**USB Stick**](/apps/usb-stick) app (mounts the SD card as a USB drive over USB-C) or the [**Filehub**](/apps/filehub) app (edit over WiFi).
+The device reads `/setup/setup.txt` from the SD card on boot. Create or edit that file with the keys above.
 
 ## Build
 
@@ -83,12 +81,6 @@ Don't want to eject the card? Use the [**USB Stick**](/apps/usb-stick) app (moun
    arduino-cli upload  -b "$FQBN" --input-dir /tmp/ai-assistant-nanogpt_build -p /dev/ttyACM0 .
    ```
 
-   For browser flashing without a build environment, use the [pre-built binary](https://www.app-pixels.com/apps/ai-assistant-nanogpt).
-
 ## License
 
 MIT — see [LICENSE](LICENSE). Do whatever you want with it.
-
----
-
-Part of the [app-pixels.com](https://www.app-pixels.com) catalogue · live listing: https://www.app-pixels.com/apps/ai-assistant-nanogpt
