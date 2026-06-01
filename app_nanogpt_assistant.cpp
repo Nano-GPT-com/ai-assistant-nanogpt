@@ -21,6 +21,7 @@
 #include "assistant_config.h"
 #include "app_common.h"
 #include "audio_engine.h"
+#include "conversation_history.h"
 #include "nanogpt_client.h"
 #include <Arduino.h>
 #include <WiFi.h>
@@ -127,8 +128,7 @@ static bool scrollModeActive() {
 
 
 // Conversation history (alternating user / assistant)
-static String   s_history[MAX_HISTORY * 2];
-static int      s_histCount      = 0;
+static ConversationHistory s_history(MAX_HISTORY, MAX_HIST_BYTES);
 
 // ── WiFi ────────────────────────────────────────────────────────────────────
 static bool wifiConnect() {
@@ -557,10 +557,10 @@ static String nanogptChat(const String &userMessage) {
     JsonObject sys = msgs.add<JsonObject>();
     sys["role"] = "system";
     sys["content"] = "Answer in as few words as possible: a single word or short phrase when you can. Reply in the same language the user uses. Use tools when they give accurate device or external data (battery, time, weather, notes, etc.); do not guess. Only call restart_device or power_off when the user explicitly asks for it. Use web search only when current information is required.";
-    for (int i = 0; i < s_histCount; i++) {
+    for (int i = 0; i < s_history.count(); i++) {
         JsonObject m = msgs.add<JsonObject>();
         m["role"]    = (i & 1) ? "assistant" : "user";
-        m["content"] = s_history[i];
+        m["content"] = s_history.at(i);
     }
     JsonObject cur = msgs.add<JsonObject>();
     cur["role"]    = "user";
@@ -632,37 +632,14 @@ static String nanogptChat(const String &userMessage) {
     return finalText.length() ? finalText : String("");
 }
 
-// ── Conversation history ────────────────────────────────────────────────────
-static int historyBytes() {
-    int total = 0;
-    for (int i = 0; i < s_histCount; i++) total += s_history[i].length();
-    return total;
-}
-
 static void addToHistory(const String &user, const String &assistant) {
-    // Make room if at count limit
-    if (s_histCount >= MAX_HISTORY * 2) {
-        for (int i = 0; i < s_histCount - 2; i++)
-            s_history[i] = s_history[i + 2];
-        s_histCount -= 2;
+    int beforeBytes = s_history.bytes();
+    int beforeCount = s_history.count();
+    s_history.add(user, assistant);
+    if (s_history.count() < beforeCount + 2 || s_history.bytes() < beforeBytes) {
+        USBSerial.println("[nanogpt] history pruned oldest pair");
     }
-    s_history[s_histCount++] = user;
-    s_history[s_histCount++] = assistant;
-
-    // Prune oldest pairs while total text exceeds byte budget
-    while (s_histCount > 2 && historyBytes() > MAX_HIST_BYTES) {
-        USBSerial.printf("[nanogpt] history prune: %d bytes, dropping oldest pair\n",
-                         historyBytes());
-        for (int i = 0; i < s_histCount - 2; i++)
-            s_history[i] = s_history[i + 2];
-        s_histCount -= 2;
-    }
-    USBSerial.printf("[nanogpt] history: %d msgs, %d bytes\n", s_histCount, historyBytes());
-}
-
-static void clearHistory() {
-    for (int i = 0; i < s_histCount; i++) s_history[i] = "";
-    s_histCount = 0;
+    USBSerial.printf("[nanogpt] history: %d msgs, %d bytes\n", s_history.count(), s_history.bytes());
 }
 
 // ── Drawing ─────────────────────────────────────────────────────────────────
@@ -946,7 +923,7 @@ void app_nanogpt_assistant_setup(Arduino_SH8601 *gfx) {
     s_scrollDone = false;
     s_touchWas   = false;
     s_contentH   = 0;
-    clearHistory();
+    s_history.clear();
 
     if (!s_recBuf) s_recBuf = (int16_t *)ps_malloc(MAX_REC_BYTES);
     if (!s_recBuf) {
@@ -1209,7 +1186,7 @@ void app_nanogpt_assistant_loop() {
                 draw();
             } else {
                 USBSerial.println("[nanogpt] PWR → new conversation");
-                clearHistory();
+                s_history.clear();
                 s_userText  = "";
                 s_agentText = "";
                 s_errorMsg  = "";

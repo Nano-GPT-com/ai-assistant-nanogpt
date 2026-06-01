@@ -1,5 +1,6 @@
 #include "../assistant_config.h"
 #include "../audio_wav.h"
+#include "../conversation_history.h"
 #include "../nanogpt_protocol.h"
 
 #include <assert.h>
@@ -106,12 +107,49 @@ static void testNanoGptMultipartLengths() {
            expectedWithoutLanguage + languagePart);
 }
 
+static void testConversationHistory() {
+    ConversationHistory history(2, 100);
+
+    history.add("u1", "a1");
+    history.add("u2", "a2");
+    assert(history.count() == 4);
+    assert(history.at(0) == "u1");
+    assert(history.at(3) == "a2");
+
+    history.add("u3", "a3");
+    assert(history.count() == 4);
+    assert(history.at(0) == "u2");
+    assert(history.at(1) == "a2");
+    assert(history.at(2) == "u3");
+    assert(history.at(3) == "a3");
+
+    history.clear();
+    assert(history.count() == 0);
+    assert(history.bytes() == 0);
+}
+
+static void testConversationHistoryByteBudget() {
+    ConversationHistory history(4, 10);
+
+    history.add("1234", "56");
+    assert(history.count() == 2);
+    assert(history.bytes() == 6);
+
+    history.add("abcd", "ef");
+    assert(history.count() == 2);
+    assert(history.at(0) == "abcd");
+    assert(history.at(1) == "ef");
+    assert(history.bytes() == 6);
+}
+
 int main() {
     testConfigDefaults();
     testConfigValueExtraction();
     testConfigFalseValues();
     testWavHeader();
     testNanoGptMultipartLengths();
+    testConversationHistory();
+    testConversationHistoryByteBudget();
     puts("pure tests passed");
     return 0;
 }
