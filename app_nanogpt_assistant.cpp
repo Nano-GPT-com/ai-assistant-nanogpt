@@ -19,6 +19,7 @@
 
 #include "app_nanogpt_assistant.h"
 #include "assistant_config.h"
+#include "assistant_chat_protocol.h"
 #include "assistant_tool_schema.h"
 #include "assistant_weather.h"
 #include "app_common.h"
@@ -455,15 +456,10 @@ static String nanogptChat(const String &userMessage) {
                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
     JsonDocument doc;
-    doc["model"]      = s_config.nanogptModel[0] ? s_config.nanogptModel : DEFAULT_NANOGPT_MODEL;
-    doc["max_tokens"] = 1024;
-    doc["temperature"] = 0.4;
-    doc["tool_choice"] = "auto";
-    doc["parallel_tool_calls"] = true;
-    if (s_config.webSearch) {
-        JsonObject webSearch = doc["webSearch"].to<JsonObject>();
-        webSearch["enabled"] = true;
-    }
+    assistant_chat_init_request(
+        doc,
+        s_config.nanogptModel[0] ? s_config.nanogptModel : DEFAULT_NANOGPT_MODEL,
+        s_config.webSearch);
 
     JsonArray tools = doc["tools"].to<JsonArray>();
     assistant_tool_schema_add_to(tools);
@@ -471,7 +467,7 @@ static String nanogptChat(const String &userMessage) {
     JsonArray msgs = doc["messages"].to<JsonArray>();
     JsonObject sys = msgs.add<JsonObject>();
     sys["role"] = "system";
-    sys["content"] = "Answer in as few words as possible: a single word or short phrase when you can. Reply in the same language the user uses. Use tools when they give accurate device or external data (battery, time, weather, notes, etc.); do not guess. Only call restart_device or power_off when the user explicitly asks for it. Use web search only when current information is required.";
+    sys["content"] = assistant_chat_system_prompt();
     for (int i = 0; i < s_history.count(); i++) {
         JsonObject m = msgs.add<JsonObject>();
         m["role"]    = (i & 1) ? "assistant" : "user";
@@ -482,8 +478,7 @@ static String nanogptChat(const String &userMessage) {
     cur["content"] = userMessage;
 
     String finalText;
-    const int MAX_ROUNDS = 6;
-    for (int round = 0; round < MAX_ROUNDS; round++) {
+    for (int round = 0; round < ASSISTANT_CHAT_MAX_TOOL_ROUNDS; round++) {
         JsonDocument rdoc;
         if (!nanogpt_client_post_chat(s_config.nanogptKey, doc, rdoc)) return "";
 
@@ -520,13 +515,14 @@ static String nanogptChat(const String &userMessage) {
             c["type"] = "function";
             JsonObject fn = c["function"].to<JsonObject>();
             fn["name"] = String((const char *)(call["function"]["name"] | ""));
-            fn["arguments"] = String((const char *)(call["function"]["arguments"] | "{}"));
+            const char *args = call["function"]["arguments"] | nullptr;
+            fn["arguments"] = String(assistant_chat_tool_arguments_or_empty(args));
         }
 
         for (JsonObject call : toolCalls) {
             const char *id = call["id"] | "";
             const char *name = call["function"]["name"] | "";
-            const char *args = call["function"]["arguments"] | "{}";
+            const char *args = assistant_chat_tool_arguments_or_empty(call["function"]["arguments"] | nullptr);
 
             JsonDocument inputDoc;
             if (deserializeJson(inputDoc, args)) {

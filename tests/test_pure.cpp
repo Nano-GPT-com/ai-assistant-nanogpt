@@ -1,4 +1,5 @@
 #include "../assistant_config.h"
+#include "../assistant_chat_protocol.h"
 #include "../assistant_tool_schema.h"
 #include "../assistant_weather.h"
 #include "../audio_wav.h"
@@ -197,6 +198,18 @@ static void testToolSchemaRegistry() {
     assert(saveNote->params[0].required);
 }
 
+static void testChatProtocolConstants() {
+    assert(ASSISTANT_CHAT_MAX_TOKENS == 1024);
+    assert(ASSISTANT_CHAT_MAX_TOOL_ROUNDS == 6);
+    assert(ASSISTANT_CHAT_TEMPERATURE > 0.39);
+    assert(ASSISTANT_CHAT_TEMPERATURE < 0.41);
+    assert(strstr(assistant_chat_system_prompt(), "Only call restart_device or power_off") != nullptr);
+
+    assert(strcmp(assistant_chat_tool_arguments_or_empty("{\"percent\":50}"), "{\"percent\":50}") == 0);
+    assert(strcmp(assistant_chat_tool_arguments_or_empty(""), "{}") == 0);
+    assert(strcmp(assistant_chat_tool_arguments_or_empty(nullptr), "{}") == 0);
+}
+
 int main() {
     testConfigDefaults();
     testConfigValueExtraction();
@@ -207,6 +220,7 @@ int main() {
     testConversationHistoryByteBudget();
     testWeatherDescriptions();
     testToolSchemaRegistry();
+    testChatProtocolConstants();
     puts("pure tests passed");
     return 0;
 }

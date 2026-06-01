@@ -6,6 +6,7 @@ cd "$(dirname "$0")/.."
 mkdir -p build/tests
 g++ -std=c++17 -Wall -Wextra -Werror -DUNIT_TEST \
   tests/test_pure.cpp \
+  assistant_chat_protocol.cpp \
   assistant_config.cpp \
   assistant_tool_schema.cpp \
   assistant_weather.cpp \
