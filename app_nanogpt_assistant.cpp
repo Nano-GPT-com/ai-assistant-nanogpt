@@ -23,6 +23,7 @@
 #include "assistant_tool_schema.h"
 #include "assistant_tool_utils.h"
 #include "assistant_recording.h"
+#include "assistant_text_layout.h"
 #include "assistant_weather.h"
 #include "app_common.h"
 #include "audio_engine.h"
@@ -97,23 +98,9 @@ static String   s_userText;
 static String   s_agentText;
 static String   s_errorMsg;
 
-struct WrappedTextCache {
-    static const int TEXT_CAP = 2048;
-    static const int MAX_LINES = 128;
-
-    char text[TEXT_CAP];
-    uint16_t start[MAX_LINES];
-    uint8_t len[MAX_LINES];
-    int lineCount;
-    int16_t maxW;
-    uint32_t hash;
-    size_t sourceLen;
-    bool valid;
-};
-
-static WrappedTextCache s_userLayout = {};
-static WrappedTextCache s_agentLayout = {};
-static WrappedTextCache s_errorLayout = {};
+static AssistantTextLayout s_userLayout = {};
+static AssistantTextLayout s_agentLayout = {};
+static AssistantTextLayout s_errorLayout = {};
 
 // Scroll state: BOOT advances pages when the latest reply overflows the viewport.
 static int      s_scrollY        = 0;
@@ -577,71 +564,20 @@ static void addToHistory(const String &user, const String &assistant) {
 }
 
 // ── Drawing ─────────────────────────────────────────────────────────────────
-static uint32_t hashText(const char *text, size_t len) {
-    uint32_t hash = 2166136261u;
-    for (size_t i = 0; i < len; i++) {
-        hash ^= (uint8_t)text[i];
-        hash *= 16777619u;
-    }
-    return hash;
-}
-
-static void prepareWrappedText(WrappedTextCache &cache, const String &source, int16_t maxW) {
+static void prepareWrappedText(AssistantTextLayout &cache, const String &source, int16_t maxW) {
     const char *raw = source.c_str();
     size_t rawLen = source.length();
-    uint32_t hash = hashText(raw, rawLen);
-    if (cache.valid && cache.maxW == maxW && cache.sourceLen == rawLen && cache.hash == hash) {
-        return;
-    }
-
-    cache.maxW = maxW;
-    cache.hash = hash;
-    cache.sourceLen = rawLen;
-    cache.valid = true;
-    cache.lineCount = 0;
-
-    utf8_to_cp437(cache.text, sizeof(cache.text), raw);
-    const char *src = cache.text;
-    int textLen = (int)strlen(src);
+    uint32_t hash = assistant_text_layout_hash(raw, rawLen);
     const int charW = 14;
     int maxChars = maxW / charW;
-    if (maxChars < 1) maxChars = 1;
-    if (maxChars > 127) maxChars = 127;
+    if (assistant_text_layout_matches(cache, rawLen, hash, maxChars)) return;
 
-    int pos = 0;
-    while (pos < textLen && cache.lineCount < WrappedTextCache::MAX_LINES) {
-        int end = pos + maxChars;
-        if (end > textLen) end = textLen;
-
-        int nl = -1;
-        for (int i = pos; i < end; i++) {
-            if (src[i] == '\n') { nl = i; break; }
-        }
-        if (nl >= 0) {
-            end = nl;                       // wrap right before the \n
-        } else if (end < textLen) {         // word-boundary wrap
-            int lastSpace = -1;
-            for (int i = end; i > pos; i--) {
-                if (src[i] == ' ') { lastSpace = i; break; }
-            }
-            if (lastSpace > pos) end = lastSpace + 1;
-        }
-
-        int n = end - pos;
-        if (n > 127) n = 127;
-        while (n > 0 && (src[pos + n - 1] == ' ' || src[pos + n - 1] == '\t')) {
-            n--;
-        }
-        cache.start[cache.lineCount] = (uint16_t)pos;
-        cache.len[cache.lineCount] = (uint8_t)n;
-        cache.lineCount++;
-
-        pos = end;
-        if (pos < textLen && src[pos] == '\n') pos++;
-    }
+    char converted[AssistantTextLayout::TEXT_CAP];
+    utf8_to_cp437(converted, sizeof(converted), raw);
+    assistant_text_layout_prepare(cache, converted, rawLen, hash, maxChars);
 }
 
-static int drawWrappedCached(WrappedTextCache &cache, const String &text,
+static int drawWrappedCached(AssistantTextLayout &cache, const String &text,
                              int16_t x, int16_t y, int16_t maxW, uint16_t col)
 {
     prepareWrappedText(cache, text, maxW);

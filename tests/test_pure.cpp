@@ -1,6 +1,7 @@
 #include "../assistant_config.h"
 #include "../assistant_chat_protocol.h"
 #include "../assistant_recording.h"
+#include "../assistant_text_layout.h"
 #include "../assistant_tool_schema.h"
 #include "../assistant_tool_utils.h"
 #include "../assistant_weather.h"
@@ -117,6 +118,40 @@ static void testRecordingCaptureMath() {
     assert(assistant_recording_is_too_short(3999, 16000));
     assert(!assistant_recording_is_too_short(4000, 16000));
     assert(assistant_recording_is_too_short(1, 0));
+}
+
+static void testTextLayoutWrapping() {
+    const char *text = "hello world\nabc def";
+    uint32_t hash = assistant_text_layout_hash(text, strlen(text));
+
+    AssistantTextLayout layout = {};
+    assert(!assistant_text_layout_matches(layout, strlen(text), hash, 6));
+    assistant_text_layout_prepare(layout, text, strlen(text), hash, 6);
+
+    assert(assistant_text_layout_matches(layout, strlen(text), hash, 6));
+    assert(layout.lineCount == 4);
+    assert(layout.start[0] == 0);
+    assert(layout.len[0] == 5);
+    assert(strncmp(layout.text + layout.start[0], "hello", layout.len[0]) == 0);
+    assert(strncmp(layout.text + layout.start[1], "world", layout.len[1]) == 0);
+    assert(strncmp(layout.text + layout.start[2], "abc", layout.len[2]) == 0);
+    assert(strncmp(layout.text + layout.start[3], "def", layout.len[3]) == 0);
+}
+
+static void testTextLayoutHardWrapsLongWords() {
+    const char *text = "abcdefgh";
+    AssistantTextLayout layout = {};
+    assistant_text_layout_prepare(
+        layout,
+        text,
+        strlen(text),
+        assistant_text_layout_hash(text, strlen(text)),
+        3);
+
+    assert(layout.lineCount == 3);
+    assert(layout.len[0] == 3);
+    assert(layout.len[1] == 3);
+    assert(layout.len[2] == 2);
 }
 
 static void testNanoGptMultipartLengths() {
@@ -281,6 +316,8 @@ int main() {
     testAudioTrimKeepsSpeechPadding();
     testAudioTrimKeepsAllSilentAudio();
     testRecordingCaptureMath();
+    testTextLayoutWrapping();
+    testTextLayoutHardWrapsLongWords();
     testNanoGptMultipartLengths();
     testConversationHistory();
     testConversationHistoryByteBudget();
