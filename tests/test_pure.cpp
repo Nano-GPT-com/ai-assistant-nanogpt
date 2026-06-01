@@ -1,5 +1,6 @@
 #include "../assistant_config.h"
 #include "../assistant_chat_protocol.h"
+#include "../assistant_recording.h"
 #include "../assistant_tool_schema.h"
 #include "../assistant_tool_utils.h"
 #include "../assistant_weather.h"
@@ -101,6 +102,21 @@ static void testAudioTrimKeepsAllSilentAudio() {
     AudioTrimWindow trim = audio_trim_voice_window(samples, 16000, 16000);
     assert(trim.offsetSamples == 0);
     assert(trim.sampleCount == 16000);
+}
+
+static void testRecordingCaptureMath() {
+    assert(assistant_recording_samples_to_pull(0, 100, 30) == 30);
+    assert(assistant_recording_samples_to_pull(90, 100, 30) == 10);
+    assert(assistant_recording_samples_to_pull(100, 100, 30) == 0);
+
+    int16_t samples[] = { 3, 4, -3, -4 };
+    assert(assistant_recording_rms(samples, 4) == 3);
+    assert(assistant_recording_rms(nullptr, 4) == 0);
+    assert(assistant_recording_rms(samples, 0) == 0);
+
+    assert(assistant_recording_is_too_short(3999, 16000));
+    assert(!assistant_recording_is_too_short(4000, 16000));
+    assert(assistant_recording_is_too_short(1, 0));
 }
 
 static void testNanoGptMultipartLengths() {
@@ -264,6 +280,7 @@ int main() {
     testWavHeader();
     testAudioTrimKeepsSpeechPadding();
     testAudioTrimKeepsAllSilentAudio();
+    testRecordingCaptureMath();
     testNanoGptMultipartLengths();
     testConversationHistory();
     testConversationHistoryByteBudget();

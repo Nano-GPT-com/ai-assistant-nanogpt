@@ -22,6 +22,7 @@
 #include "assistant_chat_protocol.h"
 #include "assistant_tool_schema.h"
 #include "assistant_tool_utils.h"
+#include "assistant_recording.h"
 #include "assistant_weather.h"
 #include "app_common.h"
 #include "audio_engine.h"
@@ -139,6 +140,26 @@ static bool recordingMeterNeedsRedraw(uint32_t now) {
         return true;
     }
     return false;
+}
+
+static int drainRecordingSamples() {
+    int lastPulled = 0;
+    for (;;) {
+        uint32_t toPull = assistant_recording_samples_to_pull(
+            s_recCount,
+            MAX_REC_SAMPLES,
+            (uint32_t)audio_engine_rx_avail());
+        if (toPull == 0) break;
+
+        int got = audio_engine_pull(s_recBuf + s_recCount, (int)toPull);
+        if (got <= 0) break;
+
+        s_recRms = assistant_recording_rms(s_recBuf + s_recCount, (uint32_t)got);
+        s_recCount += (uint32_t)got;
+        lastPulled = got;
+        if (s_recCount >= MAX_REC_SAMPLES) break;
+    }
+    return lastPulled;
 }
 
 // Conversation history (alternating user / assistant)
@@ -924,31 +945,7 @@ void app_nanogpt_assistant_loop() {
     // push silently drops new samples once the ring is full. Drain to empty
     // every iteration instead of capping per-iteration to PULL_CHUNK.
     if (s_state == GS_LISTENING) {
-        int totalPulledThisIter = 0;
-        int got = 0;
-        for (;;) {
-            int avail = audio_engine_rx_avail();
-            if (avail <= 0) break;
-            int remaining = MAX_REC_SAMPLES - s_recCount;
-            if (avail > remaining) avail = remaining;
-            if (avail <= 0) break;
-            got = audio_engine_pull(s_recBuf + s_recCount, avail);
-            if (got <= 0) break;
-            s_recCount         += got;
-            totalPulledThisIter += got;
-            if (s_recCount >= MAX_REC_SAMPLES) break;
-        }
-        // Only compute RMS for the most recent chunk — avoids scanning the
-        // full backlog when we catch up after a stall.
-        if (got > 0) {
-            int64_t sum = 0;
-            int start = s_recCount - got;
-            for (int i = 0; i < got; i++) {
-                int32_t s = s_recBuf[start + i];
-                sum += s * s;
-            }
-            s_recRms = (int)sqrt((double)sum / got);
-        }
+        drainRecordingSamples();
         if (s_recCount >= MAX_REC_SAMPLES) {
             audio_engine_record_stop();
             audio_engine_unmute();
@@ -1077,19 +1074,12 @@ void app_nanogpt_assistant_loop() {
             // Drain any remaining samples from audio engine
             delay(50);
             int avail = audio_engine_rx_avail();
-            if (avail > 0) {
-                int remaining = MAX_REC_SAMPLES - s_recCount;
-                if (avail > remaining) avail = remaining;
-                if (avail > 0) {
-                    int got = audio_engine_pull(s_recBuf + s_recCount, avail);
-                    s_recCount += got;
-                }
-            }
+            drainRecordingSamples();
             audio_engine_record_stop();
             audio_engine_unmute();
             USBSerial.printf("[nanogpt] BOOT released, %u samples (~%us), rx_avail was %d\n",
                              s_recCount, s_recCount / SAMPLE_RATE, avail);
-            if (s_recCount < SAMPLE_RATE / 4) {
+            if (assistant_recording_is_too_short(s_recCount, SAMPLE_RATE)) {
                 USBSerial.printf("[nanogpt] too short (%u < %d), ignoring\n",
                                  s_recCount, SAMPLE_RATE / 4);
                 s_state = GS_IDLE;

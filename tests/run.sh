@@ -10,6 +10,7 @@ g++ -std=c++17 -Wall -Wextra -Werror -DUNIT_TEST \
   assistant_config.cpp \
   assistant_tool_schema.cpp \
   assistant_tool_utils.cpp \
+  assistant_recording.cpp \
   assistant_weather.cpp \
   audio_trim.cpp \
   audio_wav.cpp \
