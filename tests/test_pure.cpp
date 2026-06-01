@@ -1,11 +1,13 @@
 #include "../assistant_config.h"
 #include "../assistant_chat_protocol.h"
+#include "../assistant_notes.h"
 #include "../assistant_recording.h"
 #include "../assistant_scroll.h"
 #include "../assistant_text_layout.h"
 #include "../assistant_tool_schema.h"
 #include "../assistant_tool_utils.h"
 #include "../assistant_weather.h"
+#include "../assistant_weather_client.h"
 #include "../audio_trim.h"
 #include "../audio_wav.h"
 #include "../conversation_history.h"
@@ -175,6 +177,35 @@ static void testScrollAdvance() {
     assert(state.done);
 }
 
+static void testNotesRecentSlice() {
+    const char *notes = "09:00 - one\n10:00 - two\n11:00 - three\n";
+    size_t len = assistant_notes_trim_end(notes, strlen(notes));
+    assert(len == strlen(notes) - 1);
+
+    size_t start = assistant_notes_recent_slice_start(notes, len, 2);
+    assert(strcmp(notes + start, "10:00 - two\n11:00 - three\n") == 0);
+
+    assert(assistant_notes_recent_slice_start(notes, len, 10) == 0);
+    assert(assistant_notes_trim_end(nullptr, 10) == 0);
+}
+
+static void testWeatherClientUrls() {
+    char encoded[32];
+    assert(assistant_weather_encode_location("New York", encoded, sizeof(encoded)));
+    assert(strcmp(encoded, "New%20York") == 0);
+
+    char geocode[160];
+    assistant_weather_geocode_url(encoded, geocode, sizeof(geocode));
+    assert(strstr(geocode, "name=New%20York") != nullptr);
+    assert(strstr(geocode, "count=1") != nullptr);
+
+    char forecast[240];
+    assistant_weather_forecast_url(47.4979f, 19.0402f, forecast, sizeof(forecast));
+    assert(strstr(forecast, "latitude=47.4979") != nullptr);
+    assert(strstr(forecast, "longitude=19.0402") != nullptr);
+    assert(strstr(forecast, "wind_speed_unit=kmh") != nullptr);
+}
+
 static void testNanoGptMultipartLengths() {
     const char *boundary = "----ESP32Bnd9a7f3c";
     const char *model = "Whisper-Large-V3";
@@ -340,6 +371,8 @@ int main() {
     testTextLayoutWrapping();
     testTextLayoutHardWrapsLongWords();
     testScrollAdvance();
+    testNotesRecentSlice();
+    testWeatherClientUrls();
     testNanoGptMultipartLengths();
     testConversationHistory();
     testConversationHistoryByteBudget();

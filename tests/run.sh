@@ -8,12 +8,14 @@ g++ -std=c++17 -Wall -Wextra -Werror -DUNIT_TEST \
   tests/test_pure.cpp \
   assistant_chat_protocol.cpp \
   assistant_config.cpp \
+  assistant_notes.cpp \
   assistant_tool_schema.cpp \
   assistant_tool_utils.cpp \
   assistant_recording.cpp \
   assistant_scroll.cpp \
   assistant_text_layout.cpp \
   assistant_weather.cpp \
+  assistant_weather_client.cpp \
   audio_trim.cpp \
   audio_wav.cpp \
   conversation_history.cpp \

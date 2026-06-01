@@ -23,9 +23,11 @@
 #include "assistant_tool_schema.h"
 #include "assistant_tool_utils.h"
 #include "assistant_recording.h"
+#include "assistant_notes.h"
 #include "assistant_scroll.h"
 #include "assistant_text_layout.h"
 #include "assistant_weather.h"
+#include "assistant_weather_client.h"
 #include "app_common.h"
 #include "audio_engine.h"
 #include "audio_trim.h"
@@ -291,17 +293,11 @@ static bool geocodeLocation() {
     if (s_locGeocoded) return true;
     if (s_config.location[0] == '\0') return false;
 
-    char enc[160] = {};
-    int j = 0;
-    for (int i = 0; s_config.location[i] && j < 150; i++) {
-        char c = s_config.location[i];
-        if (c == ' ') { enc[j++]='%'; enc[j++]='2'; enc[j++]='0'; }
-        else enc[j++] = c;
-    }
+    char enc[160];
+    if (!assistant_weather_encode_location(s_config.location, enc, sizeof(enc))) return false;
+
     char url[256];
-    snprintf(url, sizeof(url),
-        "https://geocoding-api.open-meteo.com/v1/search"
-        "?name=%s&count=1&language=en&format=json", enc);
+    assistant_weather_geocode_url(enc, url, sizeof(url));
 
     WiFiClientSecure cli; cli.setInsecure();
     HTTPClient http;
@@ -331,13 +327,7 @@ static String tool_get_weather(JsonVariant input) {
         return "could not geocode location";
 
     char url[400];
-    snprintf(url, sizeof(url),
-        "https://api.open-meteo.com/v1/forecast"
-        "?latitude=%.4f&longitude=%.4f"
-        "&current=temperature_2m,relative_humidity_2m,wind_speed_10m,"
-        "precipitation,weather_code"
-        "&timezone=auto&wind_speed_unit=kmh",
-        s_locLat, s_locLon);
+    assistant_weather_forecast_url(s_locLat, s_locLon, url, sizeof(url));
 
     WiFiClientSecure cli; cli.setInsecure();
     HTTPClient http;
@@ -426,16 +416,8 @@ static String tool_list_recent_notes(JsonVariant input) {
     f.close();
     SD_MMC.end();
 
-    int len = all.length();
-    while (len > 0 && (all[len-1] == '\n' || all[len-1] == '\r')) len--;
-    int found = 0;
-    int start = 0;
-    for (int i = len - 1; i >= 0; i--) {
-        if (all[i] == '\n') {
-            found++;
-            if (found >= count) { start = i + 1; break; }
-        }
-    }
+    size_t len = assistant_notes_trim_end(all.c_str(), all.length());
+    size_t start = assistant_notes_recent_slice_start(all.c_str(), len, count);
     String result = all.substring(start, len);
     result.trim();
     return result.length() ? result : "no notes today";
