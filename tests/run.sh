@@ -9,6 +9,7 @@ g++ -std=c++17 -Wall -Wextra -Werror -DUNIT_TEST \
   assistant_chat_protocol.cpp \
   assistant_config.cpp \
   assistant_tool_schema.cpp \
+  assistant_tool_utils.cpp \
   assistant_weather.cpp \
   audio_wav.cpp \
   conversation_history.cpp \

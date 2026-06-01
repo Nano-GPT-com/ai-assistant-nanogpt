@@ -21,6 +21,7 @@
 #include "assistant_config.h"
 #include "assistant_chat_protocol.h"
 #include "assistant_tool_schema.h"
+#include "assistant_tool_utils.h"
 #include "assistant_weather.h"
 #include "app_common.h"
 #include "audio_engine.h"
@@ -202,13 +203,7 @@ static String tool_get_orientation(JsonVariant input) {
     float pitch = atan2f(ax, sqrtf(ay*ay + az*az)) * 180.0f / (float)M_PI;
     float roll  = atan2f(ay, az) * 180.0f / (float)M_PI;
 
-    const char *desc;
-    if (az >  0.85f)                   desc = "face up";
-    else if (az < -0.85f)              desc = "face down";
-    else if (ax >  0.85f)              desc = "upright, top up";
-    else if (ax < -0.85f)              desc = "upside down";
-    else if (fabsf(ay) > 0.7f)         desc = "on its side";
-    else                               desc = "tilted";
+    const char *desc = assistant_orientation_description(ax, ay, az);
 
     char buf[128];
     snprintf(buf, sizeof(buf), "pitch %.1f deg, roll %.1f deg (%s)",
@@ -218,8 +213,8 @@ static String tool_get_orientation(JsonVariant input) {
 
 static String tool_set_brightness(JsonVariant input) {
     int pct = input["percent"] | -1;
+    pct = assistant_clamp_brightness_percent(pct);
     if (pct < 0) return "missing 'percent' (0-100)";
-    if (pct > 100) pct = 100;
     if (s_gfx) {
         int b255 = (pct * 255 + 50) / 100;
         s_gfx->setBrightness(b255);
@@ -232,10 +227,8 @@ static String tool_set_brightness(JsonVariant input) {
 static String tool_play_beep(JsonVariant input) {
     int freq  = input["frequency_hz"] | 1000;
     int durMs = input["duration_ms"]  | 200;
-    if (freq < 100)  freq = 100;
-    if (freq > 8000) freq = 8000;
-    if (durMs < 20)   durMs = 20;
-    if (durMs > 2000) durMs = 2000;
+    freq = assistant_clamp_beep_frequency_hz(freq);
+    durMs = assistant_clamp_beep_duration_ms(durMs);
 
     int totalSamples = (int)((int64_t)durMs * SAMPLE_RATE / 1000);
     int halfPeriod = SAMPLE_RATE / freq / 2;
@@ -392,8 +385,7 @@ static String tool_save_note(JsonVariant input) {
 
 static String tool_list_recent_notes(JsonVariant input) {
     int count = input["count"] | 5;
-    if (count < 1)  count = 1;
-    if (count > 20) count = 20;
+    count = assistant_clamp_note_count(count);
 
     SD_MMC.setPins(SDMMC_CLK, SDMMC_CMD, SDMMC_DATA);
     if (!SD_MMC.begin("/sdcard", true)) return "SD card unavailable";

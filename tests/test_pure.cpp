@@ -1,6 +1,7 @@
 #include "../assistant_config.h"
 #include "../assistant_chat_protocol.h"
 #include "../assistant_tool_schema.h"
+#include "../assistant_tool_utils.h"
 #include "../assistant_weather.h"
 #include "../audio_wav.h"
 #include "../conversation_history.h"
@@ -210,6 +211,33 @@ static void testChatProtocolConstants() {
     assert(strcmp(assistant_chat_tool_arguments_or_empty(nullptr), "{}") == 0);
 }
 
+static void testToolUtilityClamps() {
+    assert(assistant_clamp_brightness_percent(-1) == -1);
+    assert(assistant_clamp_brightness_percent(0) == 0);
+    assert(assistant_clamp_brightness_percent(101) == 100);
+
+    assert(assistant_clamp_beep_frequency_hz(20) == 100);
+    assert(assistant_clamp_beep_frequency_hz(440) == 440);
+    assert(assistant_clamp_beep_frequency_hz(9000) == 8000);
+
+    assert(assistant_clamp_beep_duration_ms(1) == 20);
+    assert(assistant_clamp_beep_duration_ms(200) == 200);
+    assert(assistant_clamp_beep_duration_ms(5000) == 2000);
+
+    assert(assistant_clamp_note_count(0) == 1);
+    assert(assistant_clamp_note_count(5) == 5);
+    assert(assistant_clamp_note_count(99) == 20);
+}
+
+static void testOrientationDescriptions() {
+    assert(strcmp(assistant_orientation_description(0.0f, 0.0f, 0.9f), "face up") == 0);
+    assert(strcmp(assistant_orientation_description(0.0f, 0.0f, -0.9f), "face down") == 0);
+    assert(strcmp(assistant_orientation_description(0.9f, 0.0f, 0.0f), "upright, top up") == 0);
+    assert(strcmp(assistant_orientation_description(-0.9f, 0.0f, 0.0f), "upside down") == 0);
+    assert(strcmp(assistant_orientation_description(0.0f, 0.8f, 0.0f), "on its side") == 0);
+    assert(strcmp(assistant_orientation_description(0.1f, 0.1f, 0.1f), "tilted") == 0);
+}
+
 int main() {
     testConfigDefaults();
     testConfigValueExtraction();
@@ -221,6 +249,8 @@ int main() {
     testWeatherDescriptions();
     testToolSchemaRegistry();
     testChatProtocolConstants();
+    testToolUtilityClamps();
+    testOrientationDescriptions();
     puts("pure tests passed");
     return 0;
 }
