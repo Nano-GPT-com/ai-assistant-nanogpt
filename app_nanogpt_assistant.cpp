@@ -75,6 +75,8 @@ static bool     s_bootWas        = false;
 static uint32_t s_lastPwr        = 0;
 static uint32_t s_lastDraw       = 0;
 static uint32_t s_recStartMs     = 0;
+static uint32_t s_lastDrawRecSec = UINT32_MAX;
+static int      s_lastDrawRmsBucket = -1;
 
 // Config
 static AssistantConfig s_config;
@@ -130,6 +132,16 @@ static bool scrollModeActive() {
     return s_contentH > PAGE_VIEW_H && !s_scrollDone;
 }
 
+static bool recordingMeterNeedsRedraw(uint32_t now) {
+    uint32_t recSec = (now - s_recStartMs) / 1000;
+    int rmsBucket = s_recRms / 250;
+    if (recSec != s_lastDrawRecSec || rmsBucket != s_lastDrawRmsBucket) {
+        s_lastDrawRecSec = recSec;
+        s_lastDrawRmsBucket = rmsBucket;
+        return true;
+    }
+    return false;
+}
 
 // Conversation history (alternating user / assistant)
 static ConversationHistory s_history(MAX_HISTORY, MAX_HIST_BYTES);
@@ -806,6 +818,7 @@ static void draw() {
         draw_mic_pill(canvas, LCD_WIDTH, LCD_HEIGHT);
     }
     canvas->flush();
+    s_lastDraw = millis();
 }
 
 // ── Setup ───────────────────────────────────────────────────────────────────
@@ -817,6 +830,8 @@ void app_nanogpt_assistant_setup(Arduino_SH8601 *gfx) {
     s_bootWas    = false;
     s_lastPwr    = 0;
     s_lastDraw   = 0;
+    s_lastDrawRecSec = UINT32_MAX;
+    s_lastDrawRmsBucket = -1;
     s_recCount   = 0;
     s_recRms     = 0;
     s_userText   = "";
@@ -1020,6 +1035,8 @@ void app_nanogpt_assistant_loop() {
             s_recCount   = 0;
             s_recRms     = 0;
             s_recStartMs = now;
+            s_lastDrawRecSec = UINT32_MAX;
+            s_lastDrawRmsBucket = -1;
             s_scrollY    = 0;
             // Ensure clean audio state before recording
             audio_engine_record_stop();
@@ -1112,11 +1129,18 @@ void app_nanogpt_assistant_loop() {
     // printfs — none eliminated it. Pages are now turned with BOOT instead.
 
 
-    // ── Periodic redraw (500 ms during LISTENING to leave headroom for the
-    //    audio pull, 200 ms otherwise). No touch gating needed — touch is off.
+    // ── Periodic redraw. Most states draw on explicit transitions only; the
+    //    listening screen refreshes when the timer or VU meter visibly changes.
     {
-        uint32_t drawInterval = (s_state == GS_LISTENING) ? 500 : 200;
-        if (now - s_lastDraw >= drawInterval) {
+        bool due = false;
+        if (s_state == GS_LISTENING) {
+            due = (now - s_lastDraw >= 250) && recordingMeterNeedsRedraw(now);
+        } else {
+            // Keep slow-changing HUD items, such as battery, from going stale
+            // without paying for a full canvas flush five times per second.
+            due = (now - s_lastDraw >= 30000);
+        }
+        if (due) {
             s_lastDraw = now;
             draw();
         }
