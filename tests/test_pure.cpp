@@ -1,4 +1,5 @@
 #include "../assistant_config.h"
+#include "../assistant_weather.h"
 #include "../audio_wav.h"
 #include "../conversation_history.h"
 #include "../nanogpt_protocol.h"
@@ -142,6 +143,20 @@ static void testConversationHistoryByteBudget() {
     assert(history.bytes() == 6);
 }
 
+static void testWeatherDescriptions() {
+    assert(strcmp(weather_wmo_description(0), "clear") == 0);
+    assert(strcmp(weather_wmo_description(2), "partly cloudy") == 0);
+    assert(strcmp(weather_wmo_description(3), "overcast") == 0);
+    assert(strcmp(weather_wmo_description(45), "foggy") == 0);
+    assert(strcmp(weather_wmo_description(57), "drizzle") == 0);
+    assert(strcmp(weather_wmo_description(67), "rain") == 0);
+    assert(strcmp(weather_wmo_description(77), "snow") == 0);
+    assert(strcmp(weather_wmo_description(82), "rain showers") == 0);
+    assert(strcmp(weather_wmo_description(86), "snow showers") == 0);
+    assert(strcmp(weather_wmo_description(99), "thunderstorm") == 0);
+    assert(strcmp(weather_wmo_description(1234), "unknown conditions") == 0);
+}
+
 int main() {
     testConfigDefaults();
     testConfigValueExtraction();
@@ -150,6 +165,7 @@ int main() {
     testNanoGptMultipartLengths();
     testConversationHistory();
     testConversationHistoryByteBudget();
+    testWeatherDescriptions();
     puts("pure tests passed");
     return 0;
 }

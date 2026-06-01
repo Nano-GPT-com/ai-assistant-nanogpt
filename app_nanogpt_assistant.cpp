@@ -19,6 +19,7 @@
 
 #include "app_nanogpt_assistant.h"
 #include "assistant_config.h"
+#include "assistant_weather.h"
 #include "app_common.h"
 #include "audio_engine.h"
 #include "conversation_history.h"
@@ -381,20 +382,6 @@ static bool geocodeLocation() {
     return true;
 }
 
-static const char *wmoDescription(int code) {
-    if (code == 0) return "clear";
-    if (code == 1 || code == 2) return "partly cloudy";
-    if (code == 3) return "overcast";
-    if (code >= 45 && code <= 48) return "foggy";
-    if (code >= 51 && code <= 57) return "drizzle";
-    if (code >= 61 && code <= 67) return "rain";
-    if (code >= 71 && code <= 77) return "snow";
-    if (code >= 80 && code <= 82) return "rain showers";
-    if (code >= 85 && code <= 86) return "snow showers";
-    if (code >= 95 && code <= 99) return "thunderstorm";
-    return "unknown conditions";
-}
-
 static String tool_get_weather(JsonVariant input) {
     (void)input;
     if (s_config.location[0] == '\0')
@@ -435,7 +422,7 @@ static String tool_get_weather(JsonVariant input) {
     float wind   = cur["wind_speed_10m"].as<float>();
     float precip = cur["precipitation"].as<float>();
     int   wmo    = cur["weather_code"].as<int>();
-    const char *desc = wmoDescription(wmo);
+    const char *desc = weather_wmo_description(wmo);
 
     char buf[220];
     snprintf(buf, sizeof(buf),
