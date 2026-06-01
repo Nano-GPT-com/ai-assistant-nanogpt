@@ -101,6 +101,24 @@ static String   s_userText;
 static String   s_agentText;
 static String   s_errorMsg;
 
+struct WrappedTextCache {
+    static const int TEXT_CAP = 2048;
+    static const int MAX_LINES = 128;
+
+    char text[TEXT_CAP];
+    uint16_t start[MAX_LINES];
+    uint8_t len[MAX_LINES];
+    int lineCount;
+    int16_t maxW;
+    uint32_t hash;
+    size_t sourceLen;
+    bool valid;
+};
+
+static WrappedTextCache s_userLayout = {};
+static WrappedTextCache s_agentLayout = {};
+static WrappedTextCache s_errorLayout = {};
+
 // Touch scroll
 static int      s_scrollY        = 0;
 static bool     s_touchWas       = false;
@@ -558,44 +576,41 @@ static void addToHistory(const String &user, const String &assistant) {
 }
 
 // ── Drawing ─────────────────────────────────────────────────────────────────
-static int drawWrapped(const String &text, int16_t x, int16_t y, int16_t maxW,
-                       uint16_t col)
-{
-    canvas->setFont(&FreeMonoBold12pt7b);
-    canvas->setTextSize(1);
-    canvas->setTextColor(col);
+static uint32_t hashText(const char *text, size_t len) {
+    uint32_t hash = 2166136261u;
+    for (size_t i = 0; i < len; i++) {
+        hash ^= (uint8_t)text[i];
+        hash *= 16777619u;
+    }
+    return hash;
+}
 
+static void prepareWrappedText(WrappedTextCache &cache, const String &source, int16_t maxW) {
+    const char *raw = source.c_str();
+    size_t rawLen = source.length();
+    uint32_t hash = hashText(raw, rawLen);
+    if (cache.valid && cache.maxW == maxW && cache.sourceLen == rawLen && cache.hash == hash) {
+        return;
+    }
+
+    cache.maxW = maxW;
+    cache.hash = hash;
+    cache.sourceLen = rawLen;
+    cache.valid = true;
+    cache.lineCount = 0;
+
+    utf8_to_cp437(cache.text, sizeof(cache.text), raw);
+    const char *src = cache.text;
+    int textLen = (int)strlen(src);
     const int charW = 14;
-    const int lineH = 22;
     int maxChars = maxW / charW;
     if (maxChars < 1) maxChars = 1;
     if (maxChars > 127) maxChars = 127;
 
-    // 1) Convert UTF-8 → CP437 once, up-front. The GFX 12pt monospace font
-    //    has glyph slots for ä/ö/ü/ß/etc only at their CP437 code points,
-    //    so without conversion German Umlauts render as garbage or get
-    //    silently dropped.
-    static char converted[2048];
-    utf8_to_cp437(converted, sizeof(converted), text.c_str());
-    const char *src = converted;
-    int len = (int)strlen(src);
-
-    // Stop drawing before we hit the MIC pill (anchored bottom-left). Lines
-    // still advance lineY so the caller's textY return value is correct, but
-    // we just don't paint over the MIC label.
-    const int bottomClip = LCD_HEIGHT - 50;
-
-    char buf[128];
     int pos = 0;
-    int lineY = y;
-    while (pos < len) {
-        // 2) Honour explicit '\n' as a forced line break — LLM replies often
-        //    contain bullet/list line breaks. Without this, canvas->print
-        //    on a buffer that contains '\n' silently advances the cursor
-        //    INTERNALLY, which then collides with the next iteration's
-        //    lineY and causes lines to stack on top of each other.
+    while (pos < textLen && cache.lineCount < WrappedTextCache::MAX_LINES) {
         int end = pos + maxChars;
-        if (end > len) end = len;
+        if (end > textLen) end = textLen;
 
         int nl = -1;
         for (int i = pos; i < end; i++) {
@@ -603,7 +618,7 @@ static int drawWrapped(const String &text, int16_t x, int16_t y, int16_t maxW,
         }
         if (nl >= 0) {
             end = nl;                       // wrap right before the \n
-        } else if (end < len) {             // word-boundary wrap
+        } else if (end < textLen) {         // word-boundary wrap
             int lastSpace = -1;
             for (int i = end; i > pos; i--) {
                 if (src[i] == ' ') { lastSpace = i; break; }
@@ -612,7 +627,35 @@ static int drawWrapped(const String &text, int16_t x, int16_t y, int16_t maxW,
         }
 
         int n = end - pos;
-        if (n >= (int)sizeof(buf)) n = sizeof(buf) - 1;
+        if (n > 127) n = 127;
+        while (n > 0 && (src[pos + n - 1] == ' ' || src[pos + n - 1] == '\t')) {
+            n--;
+        }
+        cache.start[cache.lineCount] = (uint16_t)pos;
+        cache.len[cache.lineCount] = (uint8_t)n;
+        cache.lineCount++;
+
+        pos = end;
+        if (pos < textLen && src[pos] == '\n') pos++;
+    }
+}
+
+static int drawWrappedCached(WrappedTextCache &cache, const String &text,
+                             int16_t x, int16_t y, int16_t maxW, uint16_t col)
+{
+    prepareWrappedText(cache, text, maxW);
+
+    canvas->setFont(&FreeMonoBold12pt7b);
+    canvas->setTextSize(1);
+    canvas->setTextColor(col);
+
+    const int lineH = 22;
+    const int bottomClip = LCD_HEIGHT - 50;
+    char buf[128];
+    int lineY = y;
+
+    for (int i = 0; i < cache.lineCount; i++) {
+        int n = cache.len[i];
         // Skip lines whose top edge would be above the canvas. Arduino_GFX's
         // drawChar for custom fonts only clips glyphs whose ENTIRE bounding
         // box is off-screen; partial-top glyphs invoke writePixelPreclipped()
@@ -620,17 +663,11 @@ static int drawWrapped(const String &text, int16_t x, int16_t y, int16_t maxW,
         // it writes outside the framebuffer, corrupting PSRAM. Manifested as
         // silent hard-resets whenever we scrolled text upward.
         if (n > 0 && lineY >= 0 && lineY + lineH <= bottomClip) {
-            memcpy(buf, src + pos, n);
+            memcpy(buf, cache.text + cache.start[i], n);
             buf[n] = '\0';
-            // strip trailing whitespace so the right margin looks clean
-            while (n > 0 && (buf[n - 1] == ' ' || buf[n - 1] == '\t')) {
-                buf[--n] = '\0';
-            }
             canvas->setCursor(x, lineY + lineH - 4);
             canvas->print(buf);
         }
-        pos = end;
-        if (pos < len && src[pos] == '\n') pos++;   // consume the \n
         lineY += lineH;
     }
     canvas->setFont(nullptr);
@@ -760,7 +797,7 @@ static void draw() {
         if (textY >= -16 && textY < LCD_HEIGHT)
             { canvas->setCursor(16, textY); canvas->print("You:"); }
         textY += 22;
-        textY = drawWrapped(s_userText, 16, textY, LCD_WIDTH - 32, 0xFFFF);
+        textY = drawWrappedCached(s_userLayout, s_userText, 16, textY, LCD_WIDTH - 32, 0xFFFF);
         textY += 14;
     }
 
@@ -770,7 +807,7 @@ static void draw() {
         if (textY >= -16 && textY < LCD_HEIGHT)
             { canvas->setCursor(16, textY); canvas->print("AI:"); }
         textY += 22;
-        textY = drawWrapped(s_agentText, 16, textY, LCD_WIDTH - 32, 0x07E0);
+        textY = drawWrappedCached(s_agentLayout, s_agentText, 16, textY, LCD_WIDTH - 32, 0x07E0);
         textY += 14;
     }
 
@@ -778,7 +815,7 @@ static void draw() {
 
     // ── Error ───────────────────────────────────────────────────────
     if (s_state == GS_ERROR && s_errorMsg.length() > 0) {
-        drawWrapped(s_errorMsg, 16, 180, LCD_WIDTH - 32, 0xF800);
+        drawWrappedCached(s_errorLayout, s_errorMsg, 16, 180, LCD_WIDTH - 32, 0xF800);
         canvas->setTextSize(2);
         canvas->setTextColor(0x8410);
         const char *hint = "Press PWR to retry";
