@@ -1,18 +1,18 @@
-# ai-assistant-claude
+# ai-assistant-nanogpt
 
-**AI Assistant (Claude)** · v1.1.0
+**AI Assistant (NanoGPT)** · v1.1.0
 
-Voice-to-text AI assistant — Anthropic Claude for the reply, Groq Whisper for STT. Claude can call device + web tools.
+Voice-to-text AI assistant — NanoGPT for speech-to-text and the reply. NanoGPT can call device tools and optional web search.
 
 **Hardware:** Waveshare ESP32-S3 1.8" AMOLED Touch
 
 **Tags:** `#ai` `#voice`
 
-Voice-to-text assistant that uses **Anthropic Claude (Haiku 4.5)** for the reply and **Groq Whisper** for speech-to-text. Hold **BOOT** to speak; release to get an answer.
+Voice-to-text assistant that uses **NanoGPT** for both speech-to-text and the reply. Hold **BOOT** to speak; release to get an answer.
 
-Sibling to [**AI Chat (free — groq)**](/apps/ai-chat) — same UI, same controls. The Claude variant uses a more capable model and can call **device + web tools** to give grounded answers (battery, time, weather, notes, web search) instead of guessing.
+Sibling to [**AI Chat**](/apps/ai-chat) — same UI, same controls. The NanoGPT variant can call **device + web tools** to give grounded answers (battery, time, weather, notes, web search) instead of guessing.
 
-**Cost.** About **$0.001 per question** for plain Q&A. Tool round-trips roughly double the cost; **web search** is the expensive one — a single search call adds ~$0.01. Anthropic lets you cap monthly spend (see step 3 below).
+**Cost.** Depends on the NanoGPT model you select. Tool round-trips add another model call; web search has its own search charge. Check current pricing at [nano-gpt.com/pricing](https://nano-gpt.com/pricing).
 
 ## Tools the assistant can call
 
@@ -20,33 +20,31 @@ Sibling to [**AI Chat (free — groq)**](/apps/ai-chat) — same UI, same contro
 - **Device control** — set brightness, play beep, restart, power off
 - **Weather** — current conditions for `LOCATION_1` (no API key needed)
 - **Notes** — save / list notes on SD card (`/notes/YYYY-MM-DD.txt`)
-- **Web search** — Anthropic-hosted; toggled with PWR on the splash
+- **Web search** — NanoGPT-hosted; toggled with PWR on the splash
 
 ## `setup.txt` keys
 
 **Mandatory**
 - `SSID` / `PASSWORD` — WiFi
-- `CLAUDE_KEY` — Anthropic API key (starts with `sk-ant-api…`) — chat reply
-- `GROQ_KEY` — Groq API key (free at [groq.com](https://groq.com)) — speech-to-text only
+- `NANOGPT_KEY` — NanoGPT API key from [nano-gpt.com/api](https://nano-gpt.com/api) — speech-to-text and chat reply
 
 **Optional**
 - `LANGUAGE` — ISO-639-1 hint for Whisper (`de`, `en`, …). Omit for auto-detect.
+- `NANOGPT_MODEL` — NanoGPT model id. Defaults to `openai/gpt-chat-latest`.
+- `NANOGPT_STT_MODEL` — NanoGPT speech-to-text model id. Defaults to `Whisper-Large-V3`.
 - `TIMEZONE` — POSIX TZ string for the time tool (e.g. `CET-1CEST,M3.5.0,M10.5.0/3`). Defaults to UTC.
 - `LOCATION_1` — city name for the `get_weather` tool (geocoded on first use).
-- `CLAUDE_WEBSEARCH` — `0`/`off`/`no`/`false` disables web search by default. Anything else (incl. missing) leaves it on.
+- `NANOGPT_WEBSEARCH` — `0`/`off`/`no`/`false` disables web search by default. Anything else (incl. missing) leaves it on.
 
-## How to get a Claude API key (2 minutes)
+## How to get a NanoGPT API key (2 minutes)
 
-1. Go to [**console.anthropic.com**](https://console.anthropic.com).
-2. Sign in (or sign up — any email works).
-3. **Billing → Add payment method**, then set a **monthly spend cap of $5**. More than enough for casual home use with Haiku.
-4. **Settings → API Keys → Create Key**. Name it something like `esp32-app-pixels` so you can rotate it later. Copy the key — it starts with `sk-ant-api…`.
-5. Paste it into `/setup/setup.txt` on the SD card as:
+1. Go to [**nano-gpt.com/api**](https://nano-gpt.com/api).
+2. Sign in or create an account.
+3. Create an API key. Name it something like `esp32-app-pixels` so you can rotate it later.
+4. Paste it into `/setup/setup.txt` on the SD card as:
    ```
-   CLAUDE_KEY = sk-ant-api03-xxxxxxxx...
+   NANOGPT_KEY = your_nano_gpt_api_key
    ```
-
-> **Note.** A Claude Pro / Max subscription does **not** give you API access — they're billed separately. The API account is its own thing at the console URL above.
 
 ## Controls
 
@@ -81,11 +79,11 @@ Don't want to eject the card? Use the [**USB Stick**](/apps/usb-stick) app (moun
 
    ```
    FQBN='esp32:esp32:esp32s3:USBMode=default,CDCOnBoot=cdc,PSRAM=opi,FlashSize=16M,FlashMode=qio,PartitionScheme=app3M_fat9M_16MB,UploadSpeed=921600,LoopCore=1,EventsCore=1'
-   arduino-cli compile -b "$FQBN" --build-path /tmp/ai-assistant-claude_build .
-   arduino-cli upload  -b "$FQBN" --input-dir /tmp/ai-assistant-claude_build -p /dev/ttyACM0 .
+   arduino-cli compile -b "$FQBN" --build-path /tmp/ai-assistant-nanogpt_build .
+   arduino-cli upload  -b "$FQBN" --input-dir /tmp/ai-assistant-nanogpt_build -p /dev/ttyACM0 .
    ```
 
-   For browser flashing without a build environment, use the [pre-built binary](https://www.app-pixels.com/apps/ai-assistant-claude).
+   For browser flashing without a build environment, use the [pre-built binary](https://www.app-pixels.com/apps/ai-assistant-nanogpt).
 
 ## License
 
@@ -93,4 +91,4 @@ MIT — see [LICENSE](LICENSE). Do whatever you want with it.
 
 ---
 
-Part of the [app-pixels.com](https://www.app-pixels.com) catalogue · live listing: https://www.app-pixels.com/apps/ai-assistant-claude
+Part of the [app-pixels.com](https://www.app-pixels.com) catalogue · live listing: https://www.app-pixels.com/apps/ai-assistant-nanogpt

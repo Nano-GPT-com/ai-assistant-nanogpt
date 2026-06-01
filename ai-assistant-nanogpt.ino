@@ -1,9 +1,9 @@
 /*
- * ai-chat.ino — standalone Groq voice-to-text chat
+ * ai-assistant-nanogpt.ino — standalone NanoGPT voice-to-text assistant
  * Waveshare ESP32-S3-Touch-AMOLED-1.8
  *
  * Hold BOOT to talk; release to get a typed reply.
- * Reads SSID / PASSWORD / GROQ_KEY from /setup/setup.txt.
+ * Reads SSID / PASSWORD / NANOGPT_KEY from /setup/setup.txt.
  */
 #include <Arduino.h>
 #include <Wire.h>
@@ -15,7 +15,7 @@
 #include "HWCDC.h"
 #include "XPowersLib.h"
 #include "app_common.h"
-#include "app_claude_assistant.h"
+#include "app_nanogpt_assistant.h"
 #include "TouchDrvFT6X36.hpp"
 
 
@@ -61,7 +61,7 @@ void setup() {
   g_canvas = new Arduino_Canvas(LCD_WIDTH, LCD_HEIGHT, gfx, 0, 0, 0);
   if (!g_canvas->begin()) USBSerial.println("canvas begin failed");
   gfx->setBrightness(g_config.brightness);
-  app_claude_assistant_setup(gfx);
+  app_nanogpt_assistant_setup(gfx);
 }
 
-void loop() { app_claude_assistant_loop(); }
+void loop() { app_nanogpt_assistant_loop(); }

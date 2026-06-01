@@ -1,23 +1,23 @@
 /*
- * app_claude_assistant.cpp — Voice-to-text AI assistant (Groq Whisper + Claude)
+ * app_nanogpt_assistant.cpp — Voice-to-text AI assistant (NanoGPT STT + chat)
  *
  * Push-to-talk: hold BOOT to speak, release to get a text answer.
- * Uses one Groq call for speech-to-text and one Anthropic call for the reply:
- *   1. Whisper STT  (audio → text) via api.groq.com
- *   2. Claude Chat  (text → text)  via api.anthropic.com
+ * Uses one NanoGPT call for speech-to-text and one NanoGPT call for the reply:
+ *   1. Whisper STT  (audio → text) via nano-gpt.com
+ *   2. NanoGPT Chat  (text → text)  via nano-gpt.com
  *
  * Config from SD /setup/setup.txt:
  *   SSID / PASSWORD   — WiFi credentials
- *   GROQ_KEY          — Groq API key (free at groq.com) — used for STT only
- *   CLAUDE_KEY        — Anthropic API key (console.anthropic.com)
- *   CLAUDE_WEBSEARCH  — "0" / "off" / "no" / "false" disables Anthropic's
- *                       hosted web_search tool. Anything else (incl. missing
- *                       key) leaves it ON — the default.
+ *   NANOGPT_KEY       — NanoGPT API key (nano-gpt.com/api)
+ *   NANOGPT_MODEL     — optional model id. Defaults to openai/gpt-chat-latest.
+ *   NANOGPT_STT_MODEL — optional STT model id. Defaults to Whisper-Large-V3.
+ *   NANOGPT_WEBSEARCH — "0" / "off" / "no" / "false" disables NanoGPT web
+ *                       search. Anything else (incl. missing key) leaves it ON.
  *   LANGUAGE          — optional ISO-639-1 hint for Whisper (e.g. de, en).
  *                       Omit or leave empty for auto-detection.
  */
 
-#include "app_claude_assistant.h"
+#include "app_nanogpt_assistant.h"
 #include "app_common.h"
 #include "audio_engine.h"
 #include <Arduino.h>
@@ -51,12 +51,10 @@ extern TouchDrvFT6X36  touch;
 #define WAV_HDR_SIZE    44
 #define MAX_HISTORY     6
 #define MAX_HIST_BYTES  4096   // prune when total history text exceeds this
-#define GROQ_HOST       "api.groq.com"
-#define GROQ_PORT       443
-#define CLAUDE_HOST     "api.anthropic.com"
-#define CLAUDE_PORT     443
-#define CLAUDE_MODEL    "claude-haiku-4-5"
-#define CLAUDE_API_VER  "2023-06-01"
+#define NANOGPT_HOST     "nano-gpt.com"
+#define NANOGPT_PORT     443
+#define NANOGPT_MODEL    "openai/gpt-chat-latest"
+#define NANOGPT_STT_MODEL "Whisper-Large-V3"
 #define HTTP_TIMEOUT_MS 30000
 #define BOUNDARY        "----ESP32Bnd9a7f3c"
 #define SWIPE_THRESH    8
@@ -81,10 +79,11 @@ static uint32_t s_recStartMs     = 0;
 // Config
 static char     s_ssid[3][64]    = {};
 static char     s_pass[3][64]    = {};
-static char     s_groqKey[128]   = {};
-static char     s_claudeKey[128] = {};
+static char     s_nanogptKey[128] = {};
+static char     s_nanogptModel[96] = NANOGPT_MODEL;
+static char     s_nanogptSttModel[64] = NANOGPT_STT_MODEL;
 static char     s_lang[8]        = {};   // empty = auto-detect
-static bool     s_webSearch      = true; // CLAUDE_WEBSEARCH from setup.txt
+static bool     s_webSearch      = true; // NANOGPT_WEBSEARCH from setup.txt
 static char     s_timezone[64]   = "UTC0"; // POSIX TZ string from setup.txt
 static char     s_location[64]   = {};   // LOCATION_1 from setup.txt (city name)
 static float    s_locLat         = 0.0f;
@@ -178,15 +177,16 @@ static bool readConfig() {
         extractVal(line, "PASSWORD2",  s_pass[1], 64);
         extractVal(line, "SSID3",      s_ssid[2], 64);
         extractVal(line, "PASSWORD3",  s_pass[2], 64);
-        extractVal(line, "GROQ_KEY",   s_groqKey,   128);
-        extractVal(line, "CLAUDE_KEY", s_claudeKey, 128);
+        extractVal(line, "NANOGPT_KEY", s_nanogptKey, 128);
+        extractVal(line, "NANOGPT_MODEL", s_nanogptModel, sizeof(s_nanogptModel));
+        extractVal(line, "NANOGPT_STT_MODEL", s_nanogptSttModel, sizeof(s_nanogptSttModel));
         extractVal(line, "LANGUAGE",   s_lang,      8);
         extractVal(line, "TIMEZONE",   s_timezone,  64);
         extractVal(line, "LOCATION_1", s_location,  64);
-        // CLAUDE_WEBSEARCH = 0 | off | no | false → disable. Anything else
+        // NANOGPT_WEBSEARCH = 0 | off | no | false → disable. Anything else
         // (including a missing key) leaves it at the default: on.
         char ws[8] = {};
-        if (extractVal(line, "CLAUDE_WEBSEARCH", ws, sizeof(ws))) {
+        if (extractVal(line, "NANOGPT_WEBSEARCH", ws, sizeof(ws))) {
             if (!strcmp(ws, "0") || !strcasecmp(ws, "off") ||
                 !strcasecmp(ws, "no") || !strcasecmp(ws, "false")) {
                 s_webSearch = false;
@@ -197,9 +197,10 @@ static bool readConfig() {
     }
     f.close();
     SD_MMC.end();
-    USBSerial.printf("[claude] config: ssid='%s' groq='%.8s...' claude='%.8s...' websearch=%s\n",
-                     s_ssid[0], s_groqKey, s_claudeKey, s_webSearch ? "on" : "off");
-    return s_ssid[0][0] && s_groqKey[0] && s_claudeKey[0];
+    USBSerial.printf("[nanogpt] config: ssid='%s' nanogpt='%.8s...' model='%s' stt='%s' websearch=%s\n",
+                     s_ssid[0], s_nanogptKey, s_nanogptModel, s_nanogptSttModel,
+                     s_webSearch ? "on" : "off");
+    return s_ssid[0][0] && s_nanogptKey[0];
 }
 
 // ── WiFi ────────────────────────────────────────────────────────────────────
@@ -256,7 +257,7 @@ static String readHttpResponse(WiFiClientSecure &client) {
         } else if (!client.connected()) {
             break;  // server closed connection
         } else if (millis() - lastData > 10000) {
-            USBSerial.println("[groq] read timeout (no data for 10s)");
+            USBSerial.println("[http] read timeout (no data for 10s)");
             break;  // no data for too long
         } else {
             delay(10);
@@ -264,21 +265,21 @@ static String readHttpResponse(WiFiClientSecure &client) {
     }
     client.stop();
 
-    USBSerial.printf("[groq] raw response: %d bytes\n", raw.length());
+    USBSerial.printf("[http] raw response: %d bytes\n", raw.length());
 
     // Find body after headers
     int bodyStart = raw.indexOf("\r\n\r\n");
     if (bodyStart < 0) {
-        USBSerial.println("[groq] no header/body separator found");
+        USBSerial.println("[http] no header/body separator found");
         // Log first 200 chars for debug
-        USBSerial.printf("[groq] raw: %.200s\n", raw.c_str());
+        USBSerial.printf("[http] raw: %.200s\n", raw.c_str());
         return "";
     }
 
     // Log HTTP status line
     int statusEnd = raw.indexOf("\r\n");
     if (statusEnd > 0) {
-        USBSerial.printf("[groq] status: %s\n", raw.substring(0, statusEnd).c_str());
+        USBSerial.printf("[http] status: %s\n", raw.substring(0, statusEnd).c_str());
     }
 
     String body = raw.substring(bodyStart + 4);
@@ -288,15 +289,15 @@ static String readHttpResponse(WiFiClientSecure &client) {
     int jsonStart = body.indexOf('{');
     int jsonEnd   = body.lastIndexOf('}');
     if (jsonStart < 0 || jsonEnd < 0) {
-        USBSerial.printf("[groq] no JSON in body (%d bytes): %.200s\n",
+        USBSerial.printf("[http] no JSON in body (%d bytes): %.200s\n",
                          body.length(), body.c_str());
         return "";
     }
     return body.substring(jsonStart, jsonEnd + 1);
 }
 
-// ── Groq Whisper STT ────────────────────────────────────────────────────────
-static String groqTranscribe(const int16_t *pcm, uint32_t numSamples) {
+// ── NanoGPT Speech-to-Text ──────────────────────────────────────────────────
+static String nanogptTranscribe(const int16_t *pcm, uint32_t numSamples) {
     uint32_t pcmBytes = numSamples * 2;
 
     // Build multipart parts (small strings)
@@ -306,7 +307,7 @@ static String groqTranscribe(const int16_t *pcm, uint32_t numSamples) {
     String part1end = "\r\n";
     String part2 = String("--") + BOUNDARY + "\r\n"
         "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
-        "whisper-large-v3-turbo\r\n";
+        + (s_nanogptSttModel[0] ? s_nanogptSttModel : NANOGPT_STT_MODEL) + "\r\n";
     // Optional language hint: only sent when LANGUAGE is set in setup.txt.
     // Empty → Whisper auto-detects.
     String part3;
@@ -321,26 +322,26 @@ static String groqTranscribe(const int16_t *pcm, uint32_t numSamples) {
                         + part1end.length() + part2.length()
                         + part3.length() + closing.length();
 
-    USBSerial.printf("[groq] STT free heap: %u, largest: %u\n",
+    USBSerial.printf("[nanogpt] STT free heap: %u, largest: %u\n",
                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-    USBSerial.printf("[groq] STT: %u samples (%us), %u PCM bytes, content-length=%u\n",
+    USBSerial.printf("[nanogpt] STT: %u samples (%us), %u PCM bytes, content-length=%u\n",
                      numSamples, numSamples / SAMPLE_RATE, pcmBytes, contentLen);
 
     WiFiClientSecure client;
     client.setInsecure();
     client.setTimeout(HTTP_TIMEOUT_MS / 1000);
 
-    USBSerial.println("[groq] STT connecting...");
-    if (!client.connect(GROQ_HOST, GROQ_PORT)) {
-        USBSerial.println("[groq] STT connect failed");
+    USBSerial.println("[nanogpt] STT connecting...");
+    if (!client.connect(NANOGPT_HOST, NANOGPT_PORT)) {
+        USBSerial.println("[nanogpt] STT connect failed");
         return "";
     }
-    USBSerial.println("[groq] STT connected, sending request...");
+    USBSerial.println("[nanogpt] STT connected, sending request...");
 
     // HTTP headers
-    String headers = String("POST /openai/v1/audio/transcriptions HTTP/1.1\r\n"
-        "Host: ") + GROQ_HOST + "\r\n"
-        "Authorization: Bearer " + s_groqKey + "\r\n"
+    String headers = String("POST /api/v1/audio/transcriptions HTTP/1.1\r\n"
+        "Host: ") + NANOGPT_HOST + "\r\n"
+        "Authorization: Bearer " + s_nanogptKey + "\r\n"
         "Content-Type: multipart/form-data; boundary=" + BOUNDARY + "\r\n"
         "Content-Length: " + String(contentLen) + "\r\n"
         "Connection: close\r\n"
@@ -362,12 +363,12 @@ static String groqTranscribe(const int16_t *pcm, uint32_t numSamples) {
         if (chunk > 4096) chunk = 4096;
         size_t written = client.write(((const uint8_t *)pcm) + sent, chunk);
         if (written == 0) {
-            USBSerial.printf("[groq] STT write stall at %u/%u\n", sent, pcmBytes);
+            USBSerial.printf("[nanogpt] STT write stall at %u/%u\n", sent, pcmBytes);
             delay(50);
             // Retry once
             written = client.write(((const uint8_t *)pcm) + sent, chunk);
             if (written == 0) {
-                USBSerial.println("[groq] STT write failed");
+                USBSerial.println("[nanogpt] STT write failed");
                 client.stop();
                 return "";
             }
@@ -375,40 +376,40 @@ static String groqTranscribe(const int16_t *pcm, uint32_t numSamples) {
         sent += written;
         if ((sent % 32768) == 0) {
             delay(1);  // yield every 32KB
-            USBSerial.printf("[groq] STT upload %u/%u\n", sent, pcmBytes);
+            USBSerial.printf("[nanogpt] STT upload %u/%u\n", sent, pcmBytes);
         }
     }
-    USBSerial.printf("[groq] STT upload done: %u/%u bytes\n", sent, pcmBytes);
+    USBSerial.printf("[nanogpt] STT upload done: %u/%u bytes\n", sent, pcmBytes);
 
     client.print(part1end);
     client.print(part2);
     client.print(part3);
     client.print(closing);
-    USBSerial.println("[groq] STT request sent, waiting for response...");
+    USBSerial.println("[nanogpt] STT request sent, waiting for response...");
 
     // Read response
     String body = readHttpResponse(client);
     if (body.length() == 0) {
-        USBSerial.println("[groq] STT empty response");
+        USBSerial.println("[nanogpt] STT empty response");
         return "";
     }
-    USBSerial.printf("[groq] STT body: %.300s\n", body.c_str());
+    USBSerial.printf("[nanogpt] STT body: %.300s\n", body.c_str());
 
     JsonDocument doc;
     if (deserializeJson(doc, body)) {
-        USBSerial.println("[groq] STT JSON parse failed");
+        USBSerial.println("[nanogpt] STT JSON parse failed");
         return "";
     }
 
     // Check for error
     const char *errMsg = doc["error"]["message"] | (const char *)nullptr;
     if (errMsg) {
-        USBSerial.printf("[groq] STT error: %s\n", errMsg);
+        USBSerial.printf("[nanogpt] STT error: %s\n", errMsg);
         return String("STT error: ") + errMsg;
     }
 
     String text = doc["text"] | "";
-    USBSerial.printf("[groq] STT result: '%s'\n", text.c_str());
+    USBSerial.printf("[nanogpt] STT result: '%s'\n", text.c_str());
     return text;
 }
 
@@ -416,9 +417,11 @@ static String groqTranscribe(const int16_t *pcm, uint32_t numSamples) {
 // Each call adds one tool entry to the API request's tools[] array.
 static JsonObject toolDecl(JsonArray tools, const char *name, const char *desc) {
     JsonObject t = tools.add<JsonObject>();
-    t["name"]        = name;
-    t["description"] = desc;
-    JsonObject schema = t["input_schema"].to<JsonObject>();
+    t["type"] = "function";
+    JsonObject fn = t["function"].to<JsonObject>();
+    fn["name"]        = name;
+    fn["description"] = desc;
+    JsonObject schema = fn["parameters"].to<JsonObject>();
     schema["type"] = "object";
     schema["properties"].to<JsonObject>();   // empty by default
     return t;
@@ -439,17 +442,17 @@ static void addCustomTools(JsonArray tools) {
     {
         JsonObject t = toolDecl(tools, "set_brightness",
             "Sets the screen brightness. Percent 0-100 (0=off, 100=max).");
-        JsonObject props = t["input_schema"]["properties"].as<JsonObject>();
+        JsonObject props = t["function"]["parameters"]["properties"].as<JsonObject>();
         JsonObject p = props["percent"].to<JsonObject>();
         p["type"]        = "integer";
         p["description"] = "Brightness percent 0-100";
-        JsonArray req = t["input_schema"]["required"].to<JsonArray>();
+        JsonArray req = t["function"]["parameters"]["required"].to<JsonArray>();
         req.add("percent");
     }
     {
         JsonObject t = toolDecl(tools, "play_beep",
             "Plays a short beep through the speaker.");
-        JsonObject props = t["input_schema"]["properties"].as<JsonObject>();
+        JsonObject props = t["function"]["parameters"]["properties"].as<JsonObject>();
         JsonObject f = props["frequency_hz"].to<JsonObject>();
         f["type"]        = "integer";
         f["description"] = "Tone frequency in Hz (default 1000, 100-8000).";
@@ -466,17 +469,17 @@ static void addCustomTools(JsonArray tools) {
     {
         JsonObject t = toolDecl(tools, "save_note",
             "Saves a short text note to today's note file on the SD card.");
-        JsonObject props = t["input_schema"]["properties"].as<JsonObject>();
+        JsonObject props = t["function"]["parameters"]["properties"].as<JsonObject>();
         JsonObject txt = props["text"].to<JsonObject>();
         txt["type"]        = "string";
         txt["description"] = "The note text to save (single line).";
-        JsonArray req = t["input_schema"]["required"].to<JsonArray>();
+        JsonArray req = t["function"]["parameters"]["required"].to<JsonArray>();
         req.add("text");
     }
     {
         JsonObject t = toolDecl(tools, "list_recent_notes",
             "Lists the most recent notes from today's note file.");
-        JsonObject props = t["input_schema"]["properties"].as<JsonObject>();
+        JsonObject props = t["function"]["parameters"]["properties"].as<JsonObject>();
         JsonObject c = props["count"].to<JsonObject>();
         c["type"]        = "integer";
         c["description"] = "How many recent notes to return (default 5, max 20).";
@@ -646,7 +649,7 @@ static bool geocodeLocation() {
     s_locLat = r[0]["latitude"].as<float>();
     s_locLon = r[0]["longitude"].as<float>();
     s_locGeocoded = true;
-    USBSerial.printf("[claude] geocoded '%s' → %.4f, %.4f\n",
+    USBSerial.printf("[nanogpt] geocoded '%s' → %.4f, %.4f\n",
                      s_location, s_locLat, s_locLon);
     return true;
 }
@@ -786,7 +789,7 @@ static String tool_list_recent_notes(JsonVariant input) {
 
 // ── Tool dispatcher ─────────────────────────────────────────────────────────
 static String executeTool(const char *name, JsonVariant input) {
-    USBSerial.printf("[claude] exec tool: %s\n", name);
+    USBSerial.printf("[nanogpt] exec tool: %s\n", name);
     if (!strcmp(name, "get_time"))           return tool_get_time(input);
     if (!strcmp(name, "get_battery_status")) return tool_get_battery_status(input);
     if (!strcmp(name, "get_uptime"))         return tool_get_uptime(input);
@@ -802,25 +805,24 @@ static String executeTool(const char *name, JsonVariant input) {
     return String("error: unknown tool ") + name;
 }
 
-// ── Single HTTP round-trip to Anthropic Messages API ────────────────────────
+// ── Single HTTP round-trip to NanoGPT Chat Completions API ────────────────
 // Sends the current request doc, returns the response body as a parsed JSON
 // document via `out`. Returns false on transport/parse error.
-static bool postClaude(JsonDocument &reqDoc, JsonDocument &out) {
+static bool postNanoGPT(JsonDocument &reqDoc, JsonDocument &out) {
     String reqBody;
     serializeJson(reqDoc, reqBody);
-    USBSerial.printf("[claude] req %d bytes\n", reqBody.length());
+    USBSerial.printf("[nanogpt] req %d bytes\n", reqBody.length());
 
     WiFiClientSecure client;
     client.setInsecure();
     client.setTimeout(HTTP_TIMEOUT_MS / 1000);
-    if (!client.connect(CLAUDE_HOST, CLAUDE_PORT)) {
-        USBSerial.println("[claude] connect failed");
+    if (!client.connect(NANOGPT_HOST, NANOGPT_PORT)) {
+        USBSerial.println("[nanogpt] connect failed");
         return false;
     }
-    client.print(String("POST /v1/messages HTTP/1.1\r\n"
-        "Host: ") + CLAUDE_HOST + "\r\n"
-        "x-api-key: " + s_claudeKey + "\r\n"
-        "anthropic-version: " + CLAUDE_API_VER + "\r\n"
+    client.print(String("POST /api/v1/chat/completions HTTP/1.1\r\n"
+        "Host: ") + NANOGPT_HOST + "\r\n"
+        "Authorization: Bearer " + s_nanogptKey + "\r\n"
         "Content-Type: application/json\r\n"
         "Content-Length: " + String(reqBody.length()) + "\r\n"
         "Connection: close\r\n\r\n");
@@ -828,38 +830,41 @@ static bool postClaude(JsonDocument &reqDoc, JsonDocument &out) {
     reqBody = String();
 
     String body = readHttpResponse(client);
-    if (body.length() == 0) { USBSerial.println("[claude] empty response"); return false; }
-    USBSerial.printf("[claude] body: %.300s\n", body.c_str());
+    if (body.length() == 0) { USBSerial.println("[nanogpt] empty response"); return false; }
+    USBSerial.printf("[nanogpt] body: %.300s\n", body.c_str());
 
     if (deserializeJson(out, body)) {
-        USBSerial.println("[claude] JSON parse failed");
+        USBSerial.println("[nanogpt] JSON parse failed");
         return false;
     }
     return true;
 }
 
-// ── Claude Chat Completion (Anthropic Messages API) ────────────────────────
-// Multi-turn agent loop: lets Claude call any of our 12 device tools by
-// shape (tool_use → tool_result) until it returns a pure-text reply.
-static String claudeChat(const String &userMessage) {
-    USBSerial.printf("[claude] free heap: %u, largest block: %u\n",
+// ── NanoGPT Chat Completion (OpenAI-compatible API) ───────────────────────
+// Multi-turn agent loop: lets NanoGPT call device tools with OpenAI-style
+// tool_calls, then returns the final text answer.
+static String nanogptChat(const String &userMessage) {
+    USBSerial.printf("[nanogpt] free heap: %u, largest block: %u\n",
                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
     JsonDocument doc;
-    doc["model"]      = CLAUDE_MODEL;
+    doc["model"]      = s_nanogptModel[0] ? s_nanogptModel : NANOGPT_MODEL;
     doc["max_tokens"] = 1024;
-    doc["system"]     = "Answer in as few words as possible — a single word or short phrase when you can. Reply in the same language the user uses. Use tools when they give you accurate device or external data (battery, time, weather, notes, etc.) — do not guess. Only call restart_device or power_off when the user explicitly asks for it. Use web_search only when current information is required.";
+    doc["temperature"] = 0.4;
+    doc["tool_choice"] = "auto";
+    doc["parallel_tool_calls"] = true;
+    if (s_webSearch) {
+        JsonObject webSearch = doc["webSearch"].to<JsonObject>();
+        webSearch["enabled"] = true;
+    }
 
     JsonArray tools = doc["tools"].to<JsonArray>();
-    if (s_webSearch) {
-        JsonObject ws = tools.add<JsonObject>();
-        ws["type"]     = "web_search_20250305";
-        ws["name"]     = "web_search";
-        ws["max_uses"] = 3;
-    }
     addCustomTools(tools);
 
     JsonArray msgs = doc["messages"].to<JsonArray>();
+    JsonObject sys = msgs.add<JsonObject>();
+    sys["role"] = "system";
+    sys["content"] = "Answer in as few words as possible: a single word or short phrase when you can. Reply in the same language the user uses. Use tools when they give accurate device or external data (battery, time, weather, notes, etc.); do not guess. Only call restart_device or power_off when the user explicitly asks for it. Use web search only when current information is required.";
     for (int i = 0; i < s_histCount; i++) {
         JsonObject m = msgs.add<JsonObject>();
         m["role"]    = (i & 1) ? "assistant" : "user";
@@ -873,82 +878,65 @@ static String claudeChat(const String &userMessage) {
     const int MAX_ROUNDS = 6;
     for (int round = 0; round < MAX_ROUNDS; round++) {
         JsonDocument rdoc;
-        if (!postClaude(doc, rdoc)) return "";
+        if (!postNanoGPT(doc, rdoc)) return "";
 
         const char *errMsg = rdoc["error"]["message"] | (const char *)nullptr;
         if (errMsg) {
-            USBSerial.printf("[claude] error: %s\n", errMsg);
+            USBSerial.printf("[nanogpt] error: %s\n", errMsg);
             return String("LLM error: ") + errMsg;
         }
 
-        const char *stopReason = rdoc["stop_reason"] | "";
-        USBSerial.printf("[claude] round %d stop_reason=%s\n", round, stopReason);
+        JsonObject message = rdoc["choices"][0]["message"];
+        const char *finishReason = rdoc["choices"][0]["finish_reason"] | "";
+        USBSerial.printf("[nanogpt] round %d finish_reason=%s\n", round, finishReason);
 
-        // Always assemble a fresh assistant turn from the response so the
-        // follow-up round has the proper conversation shape.
-        JsonObject assistantTurn = msgs.add<JsonObject>();
-        assistantTurn["role"] = "assistant";
-
-        if (strcmp(stopReason, "tool_use") != 0) {
-            // Terminal turn — collect any text blocks as the final reply.
-            finalText = "";
-            JsonArray content = rdoc["content"].as<JsonArray>();
-            for (JsonObject block : content) {
-                const char *t = block["type"] | "";
-                if (strcmp(t, "text") == 0) {
-                    const char *txt = block["text"] | "";
-                    if (finalText.length() > 0) finalText += "\n";
-                    finalText += txt;
-                }
-            }
-            // Discard the partial assistant turn we just added — we're not
-            // looping again, so leaving it in `doc` is fine; doc dies here.
+        JsonArray toolCalls = message["tool_calls"].as<JsonArray>();
+        if (toolCalls.isNull() || toolCalls.size() == 0) {
+            finalText = String((const char *)(message["content"] | ""));
             return finalText;
         }
 
-        // tool_use round: mirror Claude's content (text + tool_use blocks)
-        // into the assistant turn, then add a user turn with tool_result
-        // entries for each tool_use block.
-        JsonArray assistantContent = assistantTurn["content"].to<JsonArray>();
-        JsonArray content = rdoc["content"].as<JsonArray>();
-
-        // First pass: copy the assistant's content array verbatim into doc.
+        // Mirror the assistant tool_calls into the next request.
         // Use String() wrappers to force ArduinoJson to duplicate the strings
         // (otherwise it would store pointers into rdoc, which dies next round).
-        for (JsonObject block : content) {
-            const char *t = block["type"] | "";
-            JsonObject b = assistantContent.add<JsonObject>();
-            b["type"] = String(t);
-            if (strcmp(t, "text") == 0) {
-                b["text"] = String((const char *)(block["text"] | ""));
-            } else if (strcmp(t, "tool_use") == 0) {
-                b["id"]    = String((const char *)(block["id"]   | ""));
-                b["name"]  = String((const char *)(block["name"] | ""));
-                b["input"] = block["input"];   // ArduinoJson copies nested data
-            }
+        JsonObject assistantTurn = msgs.add<JsonObject>();
+        assistantTurn["role"] = "assistant";
+        if (!message["content"].isNull()) {
+            assistantTurn["content"] = String((const char *)(message["content"] | ""));
+        } else {
+            assistantTurn["content"] = nullptr;
+        }
+        JsonArray copiedCalls = assistantTurn["tool_calls"].to<JsonArray>();
+        for (JsonObject call : toolCalls) {
+            JsonObject c = copiedCalls.add<JsonObject>();
+            c["id"] = String((const char *)(call["id"] | ""));
+            c["type"] = "function";
+            JsonObject fn = c["function"].to<JsonObject>();
+            fn["name"] = String((const char *)(call["function"]["name"] | ""));
+            fn["arguments"] = String((const char *)(call["function"]["arguments"] | "{}"));
         }
 
-        // Second pass: execute each tool_use and gather tool_result blocks.
-        JsonObject userTurn = msgs.add<JsonObject>();
-        userTurn["role"] = "user";
-        JsonArray userContent = userTurn["content"].to<JsonArray>();
-        for (JsonObject block : content) {
-            const char *t = block["type"] | "";
-            if (strcmp(t, "tool_use") != 0) continue;
-            const char *id   = block["id"]   | "";
-            const char *name = block["name"] | "";
-            String result = executeTool(name, block["input"]);
-            USBSerial.printf("[claude] tool %s → %.120s\n", name, result.c_str());
+        for (JsonObject call : toolCalls) {
+            const char *id = call["id"] | "";
+            const char *name = call["function"]["name"] | "";
+            const char *args = call["function"]["arguments"] | "{}";
 
-            JsonObject tr = userContent.add<JsonObject>();
-            tr["type"]        = "tool_result";
-            tr["tool_use_id"] = String(id);
-            tr["content"]     = result;
+            JsonDocument inputDoc;
+            if (deserializeJson(inputDoc, args)) {
+                inputDoc.to<JsonObject>();
+            }
+            String result = executeTool(name, inputDoc.as<JsonVariant>());
+            USBSerial.printf("[nanogpt] tool %s → %.120s\n", name, result.c_str());
+
+            JsonObject tr = msgs.add<JsonObject>();
+            tr["role"]         = "tool";
+            tr["tool_call_id"] = String(id);
+            tr["content"]      = result;
         }
         // Loop to the next round with the augmented doc.
     }
 
-    USBSerial.println("[claude] max rounds reached without final text");
+    USBSerial.println("[nanogpt] max rounds reached without final text");
     return finalText.length() ? finalText : String("");
 }
 
@@ -971,13 +959,13 @@ static void addToHistory(const String &user, const String &assistant) {
 
     // Prune oldest pairs while total text exceeds byte budget
     while (s_histCount > 2 && historyBytes() > MAX_HIST_BYTES) {
-        USBSerial.printf("[groq] history prune: %d bytes, dropping oldest pair\n",
+        USBSerial.printf("[nanogpt] history prune: %d bytes, dropping oldest pair\n",
                          historyBytes());
         for (int i = 0; i < s_histCount - 2; i++)
             s_history[i] = s_history[i + 2];
         s_histCount -= 2;
     }
-    USBSerial.printf("[groq] history: %d msgs, %d bytes\n", s_histCount, historyBytes());
+    USBSerial.printf("[nanogpt] history: %d msgs, %d bytes\n", s_histCount, historyBytes());
 }
 
 static void clearHistory() {
@@ -1125,7 +1113,7 @@ static void draw() {
         canvas->fillRoundRect(barX, barY, barW, barH, 3, barCol);
     }
 
-    // ── Claude spark (idle + no conversation yet) ───────────────────
+    // ── NanoGPT spark (idle + no conversation yet) ───────────────────
     // Six fat lines radiating from a centre, rounded ends, lightly uneven
     // angles + lengths so it reads as a hand-drawn asterisk rather than a
     // perfect compass rose. Drawn by stamping filled circles along each arm.
@@ -1249,7 +1237,7 @@ static void draw() {
 }
 
 // ── Setup ───────────────────────────────────────────────────────────────────
-void app_claude_assistant_setup(Arduino_SH8601 *gfx) {
+void app_nanogpt_assistant_setup(Arduino_SH8601 *gfx) {
     USBSerial.println("[trace] setup() entered — device booted/rebooted");
     canvas       = g_canvas;
     s_gfx        = gfx;
@@ -1282,7 +1270,7 @@ void app_claude_assistant_setup(Arduino_SH8601 *gfx) {
     draw();
 
     if (!readConfig()) {
-        s_errorMsg = "Missing GROQ_KEY or CLAUDE_KEY in setup.txt";
+        s_errorMsg = "Missing NANOGPT_KEY in setup.txt";
         s_state = GS_ERROR;
         draw();
         return;
@@ -1300,7 +1288,7 @@ void app_claude_assistant_setup(Arduino_SH8601 *gfx) {
     // NTP sync — TIMEZONE from setup.txt is a POSIX TZ string (e.g.
     // "CET-1CEST,M3.5.0,M10.5.0/3"). If missing we default to UTC0.
     configTzTime(s_timezone, "pool.ntp.org", "time.nist.gov");
-    USBSerial.printf("[claude] NTP sync requested, tz='%s'\n", s_timezone);
+    USBSerial.printf("[nanogpt] NTP sync requested, tz='%s'\n", s_timezone);
 
     // IMU init — used by get_orientation tool. If absent, tool returns error.
     s_imuOk = s_imu.begin(Wire, QMI8658_L_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
@@ -1310,18 +1298,18 @@ void app_claude_assistant_setup(Arduino_SH8601 *gfx) {
             SensorQMI8658::ACC_ODR_125Hz,
             SensorQMI8658::LPF_MODE_2);
         s_imu.enableAccelerometer();
-        USBSerial.println("[claude] IMU ready");
+        USBSerial.println("[nanogpt] IMU ready");
     } else {
-        USBSerial.println("[claude] IMU not found");
+        USBSerial.println("[nanogpt] IMU not found");
     }
 
     s_state = GS_IDLE;
-    USBSerial.println("[groq] ready");
+    USBSerial.println("[nanogpt] ready");
     draw();
 }
 
 // ── Loop ────────────────────────────────────────────────────────────────────
-void app_claude_assistant_loop() {
+void app_nanogpt_assistant_loop() {
     common_tick();
     uint32_t now = millis();
 
@@ -1359,7 +1347,7 @@ void app_claude_assistant_loop() {
         if (s_recCount >= MAX_REC_SAMPLES) {
             audio_engine_record_stop();
             audio_engine_unmute();
-            USBSerial.printf("[groq] auto-stop, %u samples\n", s_recCount);
+            USBSerial.printf("[nanogpt] auto-stop, %u samples\n", s_recCount);
             s_state = GS_TRANSCRIBING;
             draw();
         }
@@ -1368,7 +1356,7 @@ void app_claude_assistant_loop() {
     // ── STT processing (blocking) ───────────────────────────────────
     if (s_state == GS_TRANSCRIBING) {
         draw();  // show "STT" status before blocking
-        String text = groqTranscribe(s_recBuf, s_recCount);
+        String text = nanogptTranscribe(s_recBuf, s_recCount);
         // Resync button state after blocking call
         s_bootWas = (digitalRead(BOOT_BTN) == LOW);
         if (text.length() == 0) {
@@ -1393,9 +1381,9 @@ void app_claude_assistant_loop() {
     // ── LLM processing (blocking) ───────────────────────────────────
     if (s_state == GS_THINKING) {
         draw();  // show "THINK" status before blocking
-        String reply = claudeChat(s_userText);
+        String reply = nanogptChat(s_userText);
         // Resync button state + drain any PWR press that latched while we
-        // were blocked in claudeChat().
+        // were blocked in nanogptChat().
         s_bootWas = (digitalRead(BOOT_BTN) == LOW);
         common_drain_pwr();
         if (reply.length() == 0) {
@@ -1412,11 +1400,11 @@ void app_claude_assistant_loop() {
             s_scrollY = 0;
             s_scrollDone = false;     // new answer → scroll mode is fresh
             s_state = GS_IDLE;
-            USBSerial.println("[groq] → IDLE, ready for next question");
+            USBSerial.println("[nanogpt] -> IDLE, ready for next question");
             draw();
         }
         // Deferred device-control tools — applied AFTER the reply renders so
-        // the user can read what Claude said before the chip resets / shuts.
+        // the user can read what NanoGPT said before the chip resets / shuts.
         if (s_pendingRestart) {
             delay(800);
             ESP.restart();
@@ -1459,7 +1447,7 @@ void app_claude_assistant_loop() {
             delay(50);
             audio_engine_mute();
             audio_engine_record();
-            USBSerial.println("[groq] BOOT → LISTENING");
+            USBSerial.println("[nanogpt] BOOT -> LISTENING");
             draw();
         }
     }
@@ -1478,10 +1466,10 @@ void app_claude_assistant_loop() {
             }
             audio_engine_record_stop();
             audio_engine_unmute();
-            USBSerial.printf("[groq] BOOT released, %u samples (~%us), rx_avail was %d\n",
+            USBSerial.printf("[nanogpt] BOOT released, %u samples (~%us), rx_avail was %d\n",
                              s_recCount, s_recCount / SAMPLE_RATE, avail);
             if (s_recCount < SAMPLE_RATE / 4) {
-                USBSerial.printf("[groq] too short (%u < %d), ignoring\n",
+                USBSerial.printf("[nanogpt] too short (%u < %d), ignoring\n",
                                  s_recCount, SAMPLE_RATE / 4);
                 s_state = GS_IDLE;
                 draw();
@@ -1496,7 +1484,7 @@ void app_claude_assistant_loop() {
     if (common_consume_pwr_short()) {
         common_activity();
         if (s_state == GS_ERROR) {
-            USBSerial.println("[groq] PWR → retry");
+            USBSerial.println("[nanogpt] PWR -> retry");
             s_errorMsg = "";
             s_state = GS_INIT;
             draw();
@@ -1516,11 +1504,11 @@ void app_claude_assistant_loop() {
             if (onSplash) {
                 // Splash: PWR toggles the web_search tool for the next chat.
                 s_webSearch = !s_webSearch;
-                USBSerial.printf("[claude] PWR → web search %s\n",
+                USBSerial.printf("[nanogpt] PWR → web search %s\n",
                                  s_webSearch ? "ON" : "OFF");
                 draw();
             } else {
-                USBSerial.println("[claude] PWR → new conversation");
+                USBSerial.println("[nanogpt] PWR → new conversation");
                 clearHistory();
                 s_userText  = "";
                 s_agentText = "";
