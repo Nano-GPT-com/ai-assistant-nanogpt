@@ -20,9 +20,8 @@
 #include "app_nanogpt_assistant.h"
 #include "assistant_config.h"
 #include "app_common.h"
-#include "audio_wav.h"
 #include "audio_engine.h"
-#include "nanogpt_protocol.h"
+#include "nanogpt_client.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -53,8 +52,6 @@ extern TouchDrvFT6X36  touch;
 #define PULL_CHUNK      4096
 #define MAX_HISTORY     6
 #define MAX_HIST_BYTES  4096   // prune when total history text exceeds this
-#define HTTP_TIMEOUT_MS 30000
-#define BOUNDARY        "----ESP32Bnd9a7f3c"
 #define SWIPE_THRESH    8
 
 // ── State ────────────────────────────────────────────────────────────────────
@@ -141,190 +138,6 @@ static bool wifiConnect() {
         { s_config.ssid[2], s_config.password[2] },
     };
     return wifi_try_connect(list, 3) >= 0;
-}
-
-// ── HTTP response reader (robust) ───────────────────────────────────────────
-// Reads until connection closes or timeout, returns JSON body
-static String readHttpResponse(WiFiClientSecure &client) {
-    // Read status line + headers + body into a buffer
-    // Use a PSRAM-backed String for large responses
-    String raw;
-    raw.reserve(4096);
-
-    uint32_t start = millis();
-    uint32_t lastData = start;
-    uint8_t buf[1024];
-
-    while (millis() - start < HTTP_TIMEOUT_MS) {
-        int avail = client.available();
-        if (avail > 0) {
-            int toRead = avail;
-            if (toRead > (int)sizeof(buf)) toRead = sizeof(buf);
-            int got = client.read(buf, toRead);
-            if (got > 0) {
-                raw.concat((char *)buf, got);
-                lastData = millis();
-            }
-        } else if (!client.connected()) {
-            break;  // server closed connection
-        } else if (millis() - lastData > 10000) {
-            USBSerial.println("[http] read timeout (no data for 10s)");
-            break;  // no data for too long
-        } else {
-            delay(10);
-        }
-    }
-    client.stop();
-
-    USBSerial.printf("[http] raw response: %d bytes\n", raw.length());
-
-    // Find body after headers
-    int bodyStart = raw.indexOf("\r\n\r\n");
-    if (bodyStart < 0) {
-        USBSerial.println("[http] no header/body separator found");
-        // Log first 200 chars for debug
-        USBSerial.printf("[http] raw: %.200s\n", raw.c_str());
-        return "";
-    }
-
-    // Log HTTP status line
-    int statusEnd = raw.indexOf("\r\n");
-    if (statusEnd > 0) {
-        USBSerial.printf("[http] status: %s\n", raw.substring(0, statusEnd).c_str());
-    }
-
-    String body = raw.substring(bodyStart + 4);
-    raw = String();  // free
-
-    // Handle chunked encoding or find JSON
-    int jsonStart = body.indexOf('{');
-    int jsonEnd   = body.lastIndexOf('}');
-    if (jsonStart < 0 || jsonEnd < 0) {
-        USBSerial.printf("[http] no JSON in body (%d bytes): %.200s\n",
-                         body.length(), body.c_str());
-        return "";
-    }
-    return body.substring(jsonStart, jsonEnd + 1);
-}
-
-// ── NanoGPT Speech-to-Text ──────────────────────────────────────────────────
-static String nanogptTranscribe(const int16_t *pcm, uint32_t numSamples) {
-    uint32_t pcmBytes = numSamples * 2;
-
-    // Build multipart parts (small strings)
-    String part1hdr = String("--") + BOUNDARY + "\r\n"
-        "Content-Disposition: form-data; name=\"file\"; filename=\"audio.wav\"\r\n"
-        "Content-Type: audio/wav\r\n\r\n";
-    String part1end = "\r\n";
-    String part2 = String("--") + BOUNDARY + "\r\n"
-        "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
-        + (s_config.nanogptSttModel[0] ? s_config.nanogptSttModel : DEFAULT_NANOGPT_STT_MODEL) + "\r\n";
-    // Optional language hint: only sent when LANGUAGE is set in setup.txt.
-    // Empty → Whisper auto-detects.
-    String part3;
-    if (s_config.language[0]) {
-        part3 = String("--") + BOUNDARY + "\r\n"
-            "Content-Disposition: form-data; name=\"language\"\r\n\r\n"
-            + s_config.language + "\r\n";
-    }
-    String closing = String("--") + BOUNDARY + "--\r\n";
-
-    uint32_t contentLen = nanogpt_stt_content_length(
-        BOUNDARY,
-        s_config.nanogptSttModel[0] ? s_config.nanogptSttModel : DEFAULT_NANOGPT_STT_MODEL,
-        s_config.language,
-        WAV_HEADER_SIZE,
-        pcmBytes);
-
-    USBSerial.printf("[nanogpt] STT free heap: %u, largest: %u\n",
-                     ESP.getFreeHeap(), ESP.getMaxAllocHeap());
-    USBSerial.printf("[nanogpt] STT: %u samples (%us), %u PCM bytes, content-length=%u\n",
-                     numSamples, numSamples / SAMPLE_RATE, pcmBytes, contentLen);
-
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(HTTP_TIMEOUT_MS / 1000);
-
-    USBSerial.println("[nanogpt] STT connecting...");
-    if (!client.connect(NANOGPT_HOST, NANOGPT_PORT)) {
-        USBSerial.println("[nanogpt] STT connect failed");
-        return "";
-    }
-    USBSerial.println("[nanogpt] STT connected, sending request...");
-
-    // HTTP headers
-    String headers = String("POST /api/v1/audio/transcriptions HTTP/1.1\r\n"
-        "Host: ") + NANOGPT_HOST + "\r\n"
-        "Authorization: Bearer " + s_config.nanogptKey + "\r\n"
-        "Content-Type: multipart/form-data; boundary=" + BOUNDARY + "\r\n"
-        "Content-Length: " + String(contentLen) + "\r\n"
-        "Connection: close\r\n"
-        "\r\n";
-    client.print(headers);
-
-    // Part 1: WAV file
-    client.print(part1hdr);
-
-    // WAV header
-    uint8_t wavHdr[WAV_HEADER_SIZE];
-    wav_build_pcm16_mono_header(wavHdr, pcmBytes, SAMPLE_RATE);
-    client.write(wavHdr, WAV_HEADER_SIZE);
-
-    // Stream PCM data in chunks
-    uint32_t sent = 0;
-    while (sent < pcmBytes) {
-        uint32_t chunk = pcmBytes - sent;
-        if (chunk > 4096) chunk = 4096;
-        size_t written = client.write(((const uint8_t *)pcm) + sent, chunk);
-        if (written == 0) {
-            USBSerial.printf("[nanogpt] STT write stall at %u/%u\n", sent, pcmBytes);
-            delay(50);
-            // Retry once
-            written = client.write(((const uint8_t *)pcm) + sent, chunk);
-            if (written == 0) {
-                USBSerial.println("[nanogpt] STT write failed");
-                client.stop();
-                return "";
-            }
-        }
-        sent += written;
-        if ((sent % 32768) == 0) {
-            delay(1);  // yield every 32KB
-            USBSerial.printf("[nanogpt] STT upload %u/%u\n", sent, pcmBytes);
-        }
-    }
-    USBSerial.printf("[nanogpt] STT upload done: %u/%u bytes\n", sent, pcmBytes);
-
-    client.print(part1end);
-    client.print(part2);
-    client.print(part3);
-    client.print(closing);
-    USBSerial.println("[nanogpt] STT request sent, waiting for response...");
-
-    // Read response
-    String body = readHttpResponse(client);
-    if (body.length() == 0) {
-        USBSerial.println("[nanogpt] STT empty response");
-        return "";
-    }
-    USBSerial.printf("[nanogpt] STT body: %.300s\n", body.c_str());
-
-    JsonDocument doc;
-    if (deserializeJson(doc, body)) {
-        USBSerial.println("[nanogpt] STT JSON parse failed");
-        return "";
-    }
-
-    // Check for error
-    const char *errMsg = doc["error"]["message"] | (const char *)nullptr;
-    if (errMsg) {
-        USBSerial.printf("[nanogpt] STT error: %s\n", errMsg);
-        return String("STT error: ") + errMsg;
-    }
-
-    String text = doc["text"] | "";
-    USBSerial.printf("[nanogpt] STT result: '%s'\n", text.c_str());
-    return text;
 }
 
 // ── Custom tool declarations ────────────────────────────────────────────────
@@ -719,41 +532,6 @@ static String executeTool(const char *name, JsonVariant input) {
     return String("error: unknown tool ") + name;
 }
 
-// ── Single HTTP round-trip to NanoGPT Chat Completions API ────────────────
-// Sends the current request doc, returns the response body as a parsed JSON
-// document via `out`. Returns false on transport/parse error.
-static bool postNanoGPT(JsonDocument &reqDoc, JsonDocument &out) {
-    String reqBody;
-    serializeJson(reqDoc, reqBody);
-    USBSerial.printf("[nanogpt] req %d bytes\n", reqBody.length());
-
-    WiFiClientSecure client;
-    client.setInsecure();
-    client.setTimeout(HTTP_TIMEOUT_MS / 1000);
-    if (!client.connect(NANOGPT_HOST, NANOGPT_PORT)) {
-        USBSerial.println("[nanogpt] connect failed");
-        return false;
-    }
-    client.print(String("POST /api/v1/chat/completions HTTP/1.1\r\n"
-        "Host: ") + NANOGPT_HOST + "\r\n"
-        "Authorization: Bearer " + s_config.nanogptKey + "\r\n"
-        "Content-Type: application/json\r\n"
-        "Content-Length: " + String(reqBody.length()) + "\r\n"
-        "Connection: close\r\n\r\n");
-    client.print(reqBody);
-    reqBody = String();
-
-    String body = readHttpResponse(client);
-    if (body.length() == 0) { USBSerial.println("[nanogpt] empty response"); return false; }
-    USBSerial.printf("[nanogpt] body: %.300s\n", body.c_str());
-
-    if (deserializeJson(out, body)) {
-        USBSerial.println("[nanogpt] JSON parse failed");
-        return false;
-    }
-    return true;
-}
-
 // ── NanoGPT Chat Completion (OpenAI-compatible API) ───────────────────────
 // Multi-turn agent loop: lets NanoGPT call device tools with OpenAI-style
 // tool_calls, then returns the final text answer.
@@ -792,7 +570,7 @@ static String nanogptChat(const String &userMessage) {
     const int MAX_ROUNDS = 6;
     for (int round = 0; round < MAX_ROUNDS; round++) {
         JsonDocument rdoc;
-        if (!postNanoGPT(doc, rdoc)) return "";
+        if (!nanogpt_client_post_chat(s_config.nanogptKey, doc, rdoc)) return "";
 
         const char *errMsg = rdoc["error"]["message"] | (const char *)nullptr;
         if (errMsg) {
@@ -1273,7 +1051,12 @@ void app_nanogpt_assistant_loop() {
     // ── STT processing (blocking) ───────────────────────────────────
     if (s_state == GS_TRANSCRIBING) {
         draw();  // show "STT" status before blocking
-        String text = nanogptTranscribe(s_recBuf, s_recCount);
+        NanoGptClientConfig clientConfig = {
+            s_config.nanogptKey,
+            s_config.nanogptSttModel,
+            s_config.language,
+        };
+        String text = nanogpt_client_transcribe(clientConfig, s_recBuf, s_recCount, SAMPLE_RATE);
         // Resync button state after blocking call
         s_bootWas = (digitalRead(BOOT_BTN) == LOW);
         if (text.length() == 0) {
