@@ -3,6 +3,7 @@
 #include "../assistant_tool_schema.h"
 #include "../assistant_tool_utils.h"
 #include "../assistant_weather.h"
+#include "../audio_trim.h"
 #include "../audio_wav.h"
 #include "../conversation_history.h"
 #include "../nanogpt_protocol.h"
@@ -82,6 +83,24 @@ static void testWavHeader() {
     assert(readLe16(header + 34) == 16);
     assert(memcmp(header + 36, "data", 4) == 0);
     assert(readLe32(header + 40) == 32000);
+}
+
+static void testAudioTrimKeepsSpeechPadding() {
+    int16_t samples[16000] = {};
+    for (int i = 4000; i < 8000; i++) {
+        samples[i] = (i & 1) ? 600 : -600;
+    }
+
+    AudioTrimWindow trim = audio_trim_voice_window(samples, 16000, 16000);
+    assert(trim.offsetSamples == 640);
+    assert(trim.sampleCount == 10560);
+}
+
+static void testAudioTrimKeepsAllSilentAudio() {
+    int16_t samples[16000] = {};
+    AudioTrimWindow trim = audio_trim_voice_window(samples, 16000, 16000);
+    assert(trim.offsetSamples == 0);
+    assert(trim.sampleCount == 16000);
 }
 
 static void testNanoGptMultipartLengths() {
@@ -243,6 +262,8 @@ int main() {
     testConfigValueExtraction();
     testConfigFalseValues();
     testWavHeader();
+    testAudioTrimKeepsSpeechPadding();
+    testAudioTrimKeepsAllSilentAudio();
     testNanoGptMultipartLengths();
     testConversationHistory();
     testConversationHistoryByteBudget();

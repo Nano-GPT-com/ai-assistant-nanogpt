@@ -25,6 +25,7 @@
 #include "assistant_weather.h"
 #include "app_common.h"
 #include "audio_engine.h"
+#include "audio_trim.h"
 #include "conversation_history.h"
 #include "nanogpt_client.h"
 #include <Arduino.h>
@@ -988,7 +989,16 @@ void app_nanogpt_assistant_loop() {
             s_config.nanogptSttModel,
             s_config.language,
         };
-        String text = nanogpt_client_transcribe(clientConfig, s_recBuf, s_recCount, SAMPLE_RATE);
+        AudioTrimWindow trim = audio_trim_voice_window(s_recBuf, s_recCount, SAMPLE_RATE);
+        if (trim.offsetSamples > 0 || trim.sampleCount < s_recCount) {
+            USBSerial.printf("[nanogpt] trimmed recording: %u -> %u samples (offset %u)\n",
+                             s_recCount, trim.sampleCount, trim.offsetSamples);
+        }
+        String text = nanogpt_client_transcribe(
+            clientConfig,
+            s_recBuf + trim.offsetSamples,
+            trim.sampleCount,
+            SAMPLE_RATE);
         // Resync button state after blocking call
         s_bootWas = (digitalRead(BOOT_BTN) == LOW);
         if (text.length() == 0) {
