@@ -1,6 +1,7 @@
 #include "../assistant_config.h"
 #include "../assistant_chat_protocol.h"
 #include "../assistant_recording.h"
+#include "../assistant_scroll.h"
 #include "../assistant_text_layout.h"
 #include "../assistant_tool_schema.h"
 #include "../assistant_tool_utils.h"
@@ -152,6 +153,26 @@ static void testTextLayoutHardWrapsLongWords() {
     assert(layout.len[0] == 3);
     assert(layout.len[1] == 3);
     assert(layout.len[2] == 2);
+}
+
+static void testScrollAdvance() {
+    assert(!assistant_scroll_active(100, 100, false));
+    assert(assistant_scroll_active(101, 100, false));
+    assert(!assistant_scroll_active(101, 100, true));
+    assert(assistant_scroll_max_offset(240, 100) == 140);
+    assert(assistant_scroll_max_offset(80, 100) == 0);
+
+    AssistantScrollState state = { 0, false };
+    assistant_scroll_advance(state, 240, 100);
+    assert(state.offset == 50);
+    assert(!state.done);
+    assistant_scroll_advance(state, 240, 100);
+    assert(state.offset == 100);
+    assistant_scroll_advance(state, 240, 100);
+    assert(state.offset == 140);
+    assistant_scroll_advance(state, 240, 100);
+    assert(state.offset == 0);
+    assert(state.done);
 }
 
 static void testNanoGptMultipartLengths() {
@@ -318,6 +339,7 @@ int main() {
     testRecordingCaptureMath();
     testTextLayoutWrapping();
     testTextLayoutHardWrapsLongWords();
+    testScrollAdvance();
     testNanoGptMultipartLengths();
     testConversationHistory();
     testConversationHistoryByteBudget();

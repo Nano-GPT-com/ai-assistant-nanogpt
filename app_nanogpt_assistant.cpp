@@ -23,6 +23,7 @@
 #include "assistant_tool_schema.h"
 #include "assistant_tool_utils.h"
 #include "assistant_recording.h"
+#include "assistant_scroll.h"
 #include "assistant_text_layout.h"
 #include "assistant_weather.h"
 #include "app_common.h"
@@ -115,7 +116,7 @@ static bool     s_scrollDone     = false;  // user pressed BOOT at end → scrol
 // AND the user hasn't yet pressed BOOT past the bottom (which dismisses
 // scroll-mode and brings the pill back to "talk").
 static bool scrollModeActive() {
-    return s_contentH > PAGE_VIEW_H && !s_scrollDone;
+    return assistant_scroll_active(s_contentH, PAGE_VIEW_H, s_scrollDone);
 }
 
 static bool recordingMeterNeedsRedraw(uint32_t now) {
@@ -975,17 +976,10 @@ void app_nanogpt_assistant_loop() {
     if (boot && !s_bootWas) {
         common_activity();
         if (s_state == GS_IDLE && scrollModeActive()) {
-            int step      = PAGE_VIEW_H / 2;
-            int maxScroll = s_contentH - PAGE_VIEW_H;
-            if (maxScroll < 0) maxScroll = 0;
-            if (s_scrollY >= maxScroll) {
-                // Already at the end → wrap to top and dismiss scroll-mode.
-                s_scrollY    = 0;
-                s_scrollDone = true;
-            } else {
-                s_scrollY += step;
-                if (s_scrollY > maxScroll) s_scrollY = maxScroll;
-            }
+            AssistantScrollState scroll = { s_scrollY, s_scrollDone };
+            assistant_scroll_advance(scroll, s_contentH, PAGE_VIEW_H);
+            s_scrollY = scroll.offset;
+            s_scrollDone = scroll.done;
             draw();
         } else if (s_state == GS_IDLE) {
             s_state      = GS_LISTENING;
