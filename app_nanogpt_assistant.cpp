@@ -18,8 +18,11 @@
  */
 
 #include "app_nanogpt_assistant.h"
+#include "assistant_config.h"
 #include "app_common.h"
+#include "audio_wav.h"
 #include "audio_engine.h"
+#include "nanogpt_protocol.h"
 #include <Arduino.h>
 #include <WiFi.h>
 #include <WiFiClientSecure.h>
@@ -48,13 +51,8 @@ extern TouchDrvFT6X36  touch;
 #define MAX_REC_SAMPLES (SAMPLE_RATE * MAX_REC_S)   // 480000
 #define MAX_REC_BYTES   (MAX_REC_SAMPLES * 2)        // 960000
 #define PULL_CHUNK      4096
-#define WAV_HDR_SIZE    44
 #define MAX_HISTORY     6
 #define MAX_HIST_BYTES  4096   // prune when total history text exceeds this
-#define NANOGPT_HOST     "nano-gpt.com"
-#define NANOGPT_PORT     443
-#define NANOGPT_MODEL    "openai/gpt-chat-latest"
-#define NANOGPT_STT_MODEL "Whisper-Large-V3"
 #define HTTP_TIMEOUT_MS 30000
 #define BOUNDARY        "----ESP32Bnd9a7f3c"
 #define SWIPE_THRESH    8
@@ -77,15 +75,7 @@ static uint32_t s_lastDraw       = 0;
 static uint32_t s_recStartMs     = 0;
 
 // Config
-static char     s_ssid[3][64]    = {};
-static char     s_pass[3][64]    = {};
-static char     s_nanogptKey[128] = {};
-static char     s_nanogptModel[96] = NANOGPT_MODEL;
-static char     s_nanogptSttModel[64] = NANOGPT_STT_MODEL;
-static char     s_lang[8]        = {};   // empty = auto-detect
-static bool     s_webSearch      = true; // NANOGPT_WEBSEARCH from setup.txt
-static char     s_timezone[64]   = "UTC0"; // POSIX TZ string from setup.txt
-static char     s_location[64]   = {};   // LOCATION_1 from setup.txt (city name)
+static AssistantConfig s_config;
 static float    s_locLat         = 0.0f;
 static float    s_locLon         = 0.0f;
 static bool     s_locGeocoded    = false;
@@ -143,93 +133,14 @@ static bool scrollModeActive() {
 static String   s_history[MAX_HISTORY * 2];
 static int      s_histCount      = 0;
 
-// ── Config reading ──────────────────────────────────────────────────────────
-static bool extractVal(const char *line, const char *key, char *out, size_t cap) {
-    // Anchored at line start so "SSID" doesn't match inside "AP_SSID".
-    const char *p = line;
-    while (*p == ' ' || *p == '\t') p++;
-    size_t kl = strlen(key);
-    if (strncmp(p, key, kl) != 0) return false;
-    char after = p[kl];
-    if (isalnum((unsigned char)after) || after == '_') return false;
-    p += kl;
-    while (*p == ' ' || *p == '=') p++;
-    if (*p == '"') p++;
-    size_t n = 0;
-    while (*p && *p != '"' && *p != '\n' && *p != '\r' && n < cap - 1)
-        out[n++] = *p++;
-    out[n] = '\0';
-    return n > 0;
-}
-
-static bool readConfig() {
-    SD_MMC.setPins(SDMMC_CLK, SDMMC_CMD, SDMMC_DATA);
-    if (!SD_MMC.begin("/sdcard", true)) return false;
-    File f = SD_MMC.open("/setup/setup.txt");
-    if (!f) { SD_MMC.end(); return false; }
-    char line[160];
-    while (f.available()) {
-        int n = f.readBytesUntil('\n', line, sizeof(line) - 1);
-        line[n] = '\0';
-        extractVal(line, "SSID",      s_ssid[0], 64);
-        extractVal(line, "PASSWORD",   s_pass[0], 64);
-        extractVal(line, "SSID2",      s_ssid[1], 64);
-        extractVal(line, "PASSWORD2",  s_pass[1], 64);
-        extractVal(line, "SSID3",      s_ssid[2], 64);
-        extractVal(line, "PASSWORD3",  s_pass[2], 64);
-        extractVal(line, "NANOGPT_KEY", s_nanogptKey, 128);
-        extractVal(line, "NANOGPT_MODEL", s_nanogptModel, sizeof(s_nanogptModel));
-        extractVal(line, "NANOGPT_STT_MODEL", s_nanogptSttModel, sizeof(s_nanogptSttModel));
-        extractVal(line, "LANGUAGE",   s_lang,      8);
-        extractVal(line, "TIMEZONE",   s_timezone,  64);
-        extractVal(line, "LOCATION_1", s_location,  64);
-        // NANOGPT_WEBSEARCH = 0 | off | no | false → disable. Anything else
-        // (including a missing key) leaves it at the default: on.
-        char ws[8] = {};
-        if (extractVal(line, "NANOGPT_WEBSEARCH", ws, sizeof(ws))) {
-            if (!strcmp(ws, "0") || !strcasecmp(ws, "off") ||
-                !strcasecmp(ws, "no") || !strcasecmp(ws, "false")) {
-                s_webSearch = false;
-            } else {
-                s_webSearch = true;
-            }
-        }
-    }
-    f.close();
-    SD_MMC.end();
-    USBSerial.printf("[nanogpt] config: ssid='%s' nanogpt='%.8s...' model='%s' stt='%s' websearch=%s\n",
-                     s_ssid[0], s_nanogptKey, s_nanogptModel, s_nanogptSttModel,
-                     s_webSearch ? "on" : "off");
-    return s_ssid[0][0] && s_nanogptKey[0];
-}
-
 // ── WiFi ────────────────────────────────────────────────────────────────────
 static bool wifiConnect() {
     WifiCred list[3] = {
-        { s_ssid[0], s_pass[0] },
-        { s_ssid[1], s_pass[1] },
-        { s_ssid[2], s_pass[2] },
+        { s_config.ssid[0], s_config.password[0] },
+        { s_config.ssid[1], s_config.password[1] },
+        { s_config.ssid[2], s_config.password[2] },
     };
     return wifi_try_connect(list, 3) >= 0;
-}
-
-// ── WAV header ──────────────────────────────────────────────────────────────
-static void buildWavHeader(uint8_t hdr[44], uint32_t dataBytes) {
-    uint32_t byteRate  = SAMPLE_RATE * 2;
-    uint32_t chunkSize = 36 + dataBytes;
-    memcpy(hdr,      "RIFF", 4);
-    memcpy(hdr + 4,  &chunkSize, 4);
-    memcpy(hdr + 8,  "WAVE", 4);
-    memcpy(hdr + 12, "fmt ", 4);
-    uint32_t sc1 = 16;  memcpy(hdr + 16, &sc1, 4);
-    uint16_t af  = 1;   memcpy(hdr + 20, &af,  2);
-    uint16_t ch  = 1;   memcpy(hdr + 22, &ch,  2);
-    uint32_t sr  = SAMPLE_RATE; memcpy(hdr + 24, &sr, 4);
-    memcpy(hdr + 28, &byteRate, 4);
-    uint16_t ba  = 2;   memcpy(hdr + 32, &ba,  2);
-    uint16_t bps = 16;  memcpy(hdr + 34, &bps, 2);
-    memcpy(hdr + 36, "data", 4);
-    memcpy(hdr + 40, &dataBytes, 4);
 }
 
 // ── HTTP response reader (robust) ───────────────────────────────────────────
@@ -307,20 +218,23 @@ static String nanogptTranscribe(const int16_t *pcm, uint32_t numSamples) {
     String part1end = "\r\n";
     String part2 = String("--") + BOUNDARY + "\r\n"
         "Content-Disposition: form-data; name=\"model\"\r\n\r\n"
-        + (s_nanogptSttModel[0] ? s_nanogptSttModel : NANOGPT_STT_MODEL) + "\r\n";
+        + (s_config.nanogptSttModel[0] ? s_config.nanogptSttModel : DEFAULT_NANOGPT_STT_MODEL) + "\r\n";
     // Optional language hint: only sent when LANGUAGE is set in setup.txt.
     // Empty → Whisper auto-detects.
     String part3;
-    if (s_lang[0]) {
+    if (s_config.language[0]) {
         part3 = String("--") + BOUNDARY + "\r\n"
             "Content-Disposition: form-data; name=\"language\"\r\n\r\n"
-            + s_lang + "\r\n";
+            + s_config.language + "\r\n";
     }
     String closing = String("--") + BOUNDARY + "--\r\n";
 
-    uint32_t contentLen = part1hdr.length() + WAV_HDR_SIZE + pcmBytes
-                        + part1end.length() + part2.length()
-                        + part3.length() + closing.length();
+    uint32_t contentLen = nanogpt_stt_content_length(
+        BOUNDARY,
+        s_config.nanogptSttModel[0] ? s_config.nanogptSttModel : DEFAULT_NANOGPT_STT_MODEL,
+        s_config.language,
+        WAV_HEADER_SIZE,
+        pcmBytes);
 
     USBSerial.printf("[nanogpt] STT free heap: %u, largest: %u\n",
                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
@@ -341,7 +255,7 @@ static String nanogptTranscribe(const int16_t *pcm, uint32_t numSamples) {
     // HTTP headers
     String headers = String("POST /api/v1/audio/transcriptions HTTP/1.1\r\n"
         "Host: ") + NANOGPT_HOST + "\r\n"
-        "Authorization: Bearer " + s_nanogptKey + "\r\n"
+        "Authorization: Bearer " + s_config.nanogptKey + "\r\n"
         "Content-Type: multipart/form-data; boundary=" + BOUNDARY + "\r\n"
         "Content-Length: " + String(contentLen) + "\r\n"
         "Connection: close\r\n"
@@ -352,9 +266,9 @@ static String nanogptTranscribe(const int16_t *pcm, uint32_t numSamples) {
     client.print(part1hdr);
 
     // WAV header
-    uint8_t wavHdr[WAV_HDR_SIZE];
-    buildWavHeader(wavHdr, pcmBytes);
-    client.write(wavHdr, WAV_HDR_SIZE);
+    uint8_t wavHdr[WAV_HEADER_SIZE];
+    wav_build_pcm16_mono_header(wavHdr, pcmBytes, SAMPLE_RATE);
+    client.write(wavHdr, WAV_HEADER_SIZE);
 
     // Stream PCM data in chunks
     uint32_t sent = 0;
@@ -620,12 +534,12 @@ static String tool_power_off(JsonVariant input) {
 // ── Weather (open-meteo) ────────────────────────────────────────────────────
 static bool geocodeLocation() {
     if (s_locGeocoded) return true;
-    if (s_location[0] == '\0') return false;
+    if (s_config.location[0] == '\0') return false;
 
     char enc[160] = {};
     int j = 0;
-    for (int i = 0; s_location[i] && j < 150; i++) {
-        char c = s_location[i];
+    for (int i = 0; s_config.location[i] && j < 150; i++) {
+        char c = s_config.location[i];
         if (c == ' ') { enc[j++]='%'; enc[j++]='2'; enc[j++]='0'; }
         else enc[j++] = c;
     }
@@ -650,7 +564,7 @@ static bool geocodeLocation() {
     s_locLon = r[0]["longitude"].as<float>();
     s_locGeocoded = true;
     USBSerial.printf("[nanogpt] geocoded '%s' → %.4f, %.4f\n",
-                     s_location, s_locLat, s_locLon);
+                     s_config.location, s_locLat, s_locLon);
     return true;
 }
 
@@ -670,7 +584,7 @@ static const char *wmoDescription(int code) {
 
 static String tool_get_weather(JsonVariant input) {
     (void)input;
-    if (s_location[0] == '\0')
+    if (s_config.location[0] == '\0')
         return "no LOCATION_1 configured in /setup/setup.txt";
     if (!geocodeLocation())
         return "could not geocode location";
@@ -713,7 +627,7 @@ static String tool_get_weather(JsonVariant input) {
     char buf[220];
     snprintf(buf, sizeof(buf),
         "%s in %s: %.0f C, humidity %d%%, wind %.0f km/h, precip %.1f mm",
-        desc, s_location, temp, hum, wind, precip);
+        desc, s_config.location, temp, hum, wind, precip);
     return String(buf);
 }
 
@@ -822,7 +736,7 @@ static bool postNanoGPT(JsonDocument &reqDoc, JsonDocument &out) {
     }
     client.print(String("POST /api/v1/chat/completions HTTP/1.1\r\n"
         "Host: ") + NANOGPT_HOST + "\r\n"
-        "Authorization: Bearer " + s_nanogptKey + "\r\n"
+        "Authorization: Bearer " + s_config.nanogptKey + "\r\n"
         "Content-Type: application/json\r\n"
         "Content-Length: " + String(reqBody.length()) + "\r\n"
         "Connection: close\r\n\r\n");
@@ -848,12 +762,12 @@ static String nanogptChat(const String &userMessage) {
                      ESP.getFreeHeap(), ESP.getMaxAllocHeap());
 
     JsonDocument doc;
-    doc["model"]      = s_nanogptModel[0] ? s_nanogptModel : NANOGPT_MODEL;
+    doc["model"]      = s_config.nanogptModel[0] ? s_config.nanogptModel : DEFAULT_NANOGPT_MODEL;
     doc["max_tokens"] = 1024;
     doc["temperature"] = 0.4;
     doc["tool_choice"] = "auto";
     doc["parallel_tool_calls"] = true;
-    if (s_webSearch) {
+    if (s_config.webSearch) {
         JsonObject webSearch = doc["webSearch"].to<JsonObject>();
         webSearch["enabled"] = true;
     }
@@ -1156,9 +1070,9 @@ static void draw() {
 
         // Tool-status label, vertically aligned with the PWR pill on the right
         // edge (PWR is what the user uses to toggle). Reflects current state.
-        const char *wsLabel = s_webSearch ? "web search: ON" : "web search: OFF";
-        uint16_t wsColor   = s_webSearch ? 0x6E0B   // muted teal
-                                          : 0x52AA;  // muted grey
+        const char *wsLabel = s_config.webSearch ? "web search: ON" : "web search: OFF";
+        uint16_t wsColor   = s_config.webSearch ? 0x6E0B   // muted teal
+                                                 : 0x52AA;  // muted grey
         canvas->setTextSize(2);
         canvas->setTextColor(wsColor);
         int16_t wsW = (int16_t)(strlen(wsLabel) * 12);
@@ -1219,7 +1133,7 @@ static void draw() {
         // conversation on screen PWR clears it and starts a new one.
         bool onSplash = (s_userText.length() == 0 && s_agentText.length() == 0);
         if (onSplash) {
-            draw_pill_label(canvas, 0, 1, s_webSearch ? "on" : "off");
+            draw_pill_label(canvas, 0, 1, s_config.webSearch ? "on" : "off");
         } else {
             draw_pill_label(canvas, 0, 1, "new");
         }
@@ -1269,12 +1183,15 @@ void app_nanogpt_assistant_setup(Arduino_SH8601 *gfx) {
     // Touch is not used in this app (see note in loop body).
     draw();
 
-    if (!readConfig()) {
+    if (!assistant_config_load(s_config)) {
         s_errorMsg = "Missing NANOGPT_KEY in setup.txt";
         s_state = GS_ERROR;
         draw();
         return;
     }
+    USBSerial.printf("[nanogpt] config: ssid='%s' nanogpt='%.8s...' model='%s' stt='%s' websearch=%s\n",
+                     s_config.ssid[0], s_config.nanogptKey, s_config.nanogptModel,
+                     s_config.nanogptSttModel, s_config.webSearch ? "on" : "off");
 
     s_state = GS_INIT;
     draw();
@@ -1287,8 +1204,8 @@ void app_nanogpt_assistant_setup(Arduino_SH8601 *gfx) {
 
     // NTP sync — TIMEZONE from setup.txt is a POSIX TZ string (e.g.
     // "CET-1CEST,M3.5.0,M10.5.0/3"). If missing we default to UTC0.
-    configTzTime(s_timezone, "pool.ntp.org", "time.nist.gov");
-    USBSerial.printf("[nanogpt] NTP sync requested, tz='%s'\n", s_timezone);
+    configTzTime(s_config.timezone, "pool.ntp.org", "time.nist.gov");
+    USBSerial.printf("[nanogpt] NTP sync requested, tz='%s'\n", s_config.timezone);
 
     // IMU init — used by get_orientation tool. If absent, tool returns error.
     s_imuOk = s_imu.begin(Wire, QMI8658_L_SLAVE_ADDRESS, IIC_SDA, IIC_SCL);
@@ -1503,9 +1420,9 @@ void app_nanogpt_assistant_loop() {
             bool onSplash = (s_userText.length() == 0 && s_agentText.length() == 0);
             if (onSplash) {
                 // Splash: PWR toggles the web_search tool for the next chat.
-                s_webSearch = !s_webSearch;
+                s_config.webSearch = !s_config.webSearch;
                 USBSerial.printf("[nanogpt] PWR → web search %s\n",
-                                 s_webSearch ? "ON" : "OFF");
+                                 s_config.webSearch ? "ON" : "OFF");
                 draw();
             } else {
                 USBSerial.println("[nanogpt] PWR → new conversation");
