@@ -48,8 +48,14 @@ struct Ring {
         uint32_t sp = space();
         if ((uint32_t)n > sp) n = (int)sp;
         uint32_t h = head;
-        for (int i = 0; i < n; i++)
-            buf[(h + i) & RING_MASK] = src[i];
+        uint32_t idx = h & RING_MASK;
+        uint32_t first = RING_CAP - idx;
+        if (first > (uint32_t)n) first = (uint32_t)n;
+        memcpy(buf + idx, src, first * sizeof(int16_t));
+        uint32_t second = (uint32_t)n - first;
+        if (second > 0) {
+            memcpy(buf, src + first, second * sizeof(int16_t));
+        }
         __asm__ __volatile__("memw" ::: "memory");
         head = h + n;
         return n;
@@ -59,8 +65,14 @@ struct Ring {
         uint32_t avail = count();
         if ((uint32_t)n > avail) n = (int)avail;
         uint32_t t = tail;
-        for (int i = 0; i < n; i++)
-            dst[i] = buf[(t + i) & RING_MASK];
+        uint32_t idx = t & RING_MASK;
+        uint32_t first = RING_CAP - idx;
+        if (first > (uint32_t)n) first = (uint32_t)n;
+        memcpy(dst, buf + idx, first * sizeof(int16_t));
+        uint32_t second = (uint32_t)n - first;
+        if (second > 0) {
+            memcpy(dst + first, buf, second * sizeof(int16_t));
+        }
         __asm__ __volatile__("memw" ::: "memory");
         tail = t + n;
         return n;
