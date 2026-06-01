@@ -340,11 +340,10 @@ static String tool_get_weather(JsonVariant input) {
         snprintf(b, sizeof(b), "weather HTTP %d", code);
         return String(b);
     }
-    String body = http.getString();
-    http.end();
-
     JsonDocument doc;
-    if (deserializeJson(doc, body)) return "weather JSON parse failed";
+    DeserializationError err = deserializeJson(doc, http.getStream());
+    http.end();
+    if (err) return "weather JSON parse failed";
     JsonObject cur = doc["current"];
     if (cur.isNull()) return "weather: no 'current' data";
 
