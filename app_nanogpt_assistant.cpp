@@ -41,24 +41,19 @@
 #include "canvas/Arduino_Canvas.h"
 #include "pin_config.h"
 #include "HWCDC.h"
-#include "TouchDrvFT6X36.hpp"
 #include "Fonts/FreeMonoBold12pt7b.h"
 
 extern USBCDC USBSerial;
 extern Arduino_Canvas *g_canvas;
-extern TouchDrvFT6X36  touch;
 
 // ── Constants ────────────────────────────────────────────────────────────────
 #define BOOT_BTN        0
-#define PWR_POLL_MS     50
 #define SAMPLE_RATE     16000
 #define MAX_REC_S       30
 #define MAX_REC_SAMPLES (SAMPLE_RATE * MAX_REC_S)   // 480000
 #define MAX_REC_BYTES   (MAX_REC_SAMPLES * 2)        // 960000
-#define PULL_CHUNK      4096
 #define MAX_HISTORY     6
 #define MAX_HIST_BYTES  4096   // prune when total history text exceeds this
-#define SWIPE_THRESH    8
 
 // ── State ────────────────────────────────────────────────────────────────────
 enum GState {
@@ -73,7 +68,6 @@ enum GState {
 static Arduino_Canvas *canvas    = nullptr;
 static GState   s_state          = GS_INIT;
 static bool     s_bootWas        = false;
-static uint32_t s_lastPwr        = 0;
 static uint32_t s_lastDraw       = 0;
 static uint32_t s_recStartMs     = 0;
 static uint32_t s_lastDrawRecSec = UINT32_MAX;
@@ -120,24 +114,9 @@ static WrappedTextCache s_userLayout = {};
 static WrappedTextCache s_agentLayout = {};
 static WrappedTextCache s_errorLayout = {};
 
-// Touch scroll
+// Scroll state: BOOT advances pages when the latest reply overflows the viewport.
 static int      s_scrollY        = 0;
-static bool     s_touchWas       = false;
-static int16_t  s_touchLastY     = 0;
-static int16_t  s_touchDownX     = 0;   // touch-down position for tap detection
-static int16_t  s_touchDownY     = 0;
-static uint32_t s_touchDownMs    = 0;
-static uint32_t s_touchEndedAt   = 0;   // ms of last touch release
 
-// Tap thresholds
-#define TAP_MAX_MS    600
-#define TAP_MAX_DIST  25
-
-// ── Page-advance button geometry (bottom of screen, only when scrollable) ───
-#define PAGE_BTN_W    ((LCD_WIDTH  * 80) / 100)   // 80 % wide
-#define PAGE_BTN_H    ((LCD_HEIGHT *  9) / 100)   //  9 % tall
-#define PAGE_BTN_X    ((LCD_WIDTH - PAGE_BTN_W) / 2)
-#define PAGE_BTN_Y    (LCD_HEIGHT - PAGE_BTN_H - 6)
 #define PAGE_VIEW_H   (LCD_HEIGHT - 130)          // visible text height
 
 static int      s_contentH       = 0;
@@ -866,7 +845,6 @@ void app_nanogpt_assistant_setup(Arduino_SH8601 *gfx) {
     s_gfx        = gfx;
     s_state      = GS_INIT;
     s_bootWas    = false;
-    s_lastPwr    = 0;
     s_lastDraw   = 0;
     s_lastDrawRecSec = UINT32_MAX;
     s_lastDrawRmsBucket = -1;
@@ -877,7 +855,6 @@ void app_nanogpt_assistant_setup(Arduino_SH8601 *gfx) {
     s_errorMsg   = "";
     s_scrollY    = 0;
     s_scrollDone = false;
-    s_touchWas   = false;
     s_contentH   = 0;
     s_history.clear();
 
