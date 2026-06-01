@@ -12,60 +12,133 @@
 
 extern USBCDC USBSerial;
 
-static String readJsonHttpResponse(WiFiClientSecure &client) {
-    String raw;
-    raw.reserve(4096);
+class ChunkedBodyStream : public Stream {
+public:
+    explicit ChunkedBodyStream(WiFiClientSecure &client)
+        : m_client(client) {}
 
-    uint32_t start = millis();
-    uint32_t lastData = start;
-    uint8_t buf[1024];
+    int available() override {
+        return m_done ? 0 : 1;
+    }
 
-    while (millis() - start < HTTP_TIMEOUT_MS) {
-        int avail = client.available();
-        if (avail > 0) {
-            int toRead = avail;
-            if (toRead > (int)sizeof(buf)) toRead = sizeof(buf);
-            int got = client.read(buf, toRead);
-            if (got > 0) {
-                raw.concat((char *)buf, got);
-                lastData = millis();
-            }
-        } else if (!client.connected()) {
-            break;
-        } else if (millis() - lastData > 10000) {
-            USBSerial.println("[http] read timeout (no data for 10s)");
-            break;
-        } else {
-            delay(10);
+    int read() override {
+        if (m_peeked >= 0) {
+            int c = m_peeked;
+            m_peeked = -1;
+            return c;
         }
+        return readByte();
+    }
+
+    int peek() override {
+        if (m_peeked < 0) m_peeked = readByte();
+        return m_peeked;
+    }
+
+    void flush() override {}
+
+    size_t write(uint8_t) override {
+        return 0;
+    }
+
+private:
+    WiFiClientSecure &m_client;
+    size_t m_chunkRemaining = 0;
+    bool m_done = false;
+    int m_peeked = -1;
+
+    int readByte() {
+        if (m_done) return -1;
+        if (!ensureChunk()) return -1;
+
+        int c = m_client.read();
+        if (c < 0) return -1;
+        m_chunkRemaining--;
+        if (m_chunkRemaining == 0) {
+            consumeCrlf();
+        }
+        return c;
+    }
+
+    bool ensureChunk() {
+        while (m_chunkRemaining == 0 && !m_done) {
+            String line = m_client.readStringUntil('\n');
+            line.trim();
+            int semicolon = line.indexOf(';');
+            if (semicolon >= 0) line.remove(semicolon);
+            m_chunkRemaining = strtoul(line.c_str(), nullptr, 16);
+            if (m_chunkRemaining == 0) {
+                m_done = true;
+                consumeTrailers();
+                return false;
+            }
+        }
+        return m_chunkRemaining > 0;
+    }
+
+    void consumeCrlf() {
+        if (m_client.peek() == '\r') m_client.read();
+        if (m_client.peek() == '\n') m_client.read();
+    }
+
+    void consumeTrailers() {
+        for (;;) {
+            String line = m_client.readStringUntil('\n');
+            line.trim();
+            if (line.length() == 0) break;
+        }
+    }
+};
+
+static bool readHttpHeaders(WiFiClientSecure &client, bool &chunked) {
+    uint32_t start = millis();
+    while (!client.available() && client.connected() && millis() - start < HTTP_TIMEOUT_MS) {
+        delay(10);
+    }
+
+    String status = client.readStringUntil('\n');
+    status.trim();
+    if (status.length() == 0) {
+        USBSerial.println("[http] empty status line");
+        return false;
+    }
+    USBSerial.printf("[http] status: %s\n", status.c_str());
+
+    chunked = false;
+    for (;;) {
+        String line = client.readStringUntil('\n');
+        line.trim();
+        if (line.length() == 0) break;
+        String lower = line;
+        lower.toLowerCase();
+        if (lower.startsWith("transfer-encoding:") && lower.indexOf("chunked") >= 0) {
+            chunked = true;
+        }
+    }
+    return true;
+}
+
+static bool deserializeJsonHttpResponse(WiFiClientSecure &client, JsonDocument &doc) {
+    bool chunked = false;
+    if (!readHttpHeaders(client, chunked)) {
+        client.stop();
+        return false;
+    }
+
+    DeserializationError err;
+    if (chunked) {
+        ChunkedBodyStream body(client);
+        err = deserializeJson(doc, body);
+    } else {
+        err = deserializeJson(doc, client);
     }
     client.stop();
 
-    USBSerial.printf("[http] raw response: %d bytes\n", raw.length());
-
-    int bodyStart = raw.indexOf("\r\n\r\n");
-    if (bodyStart < 0) {
-        USBSerial.println("[http] no header/body separator found");
-        USBSerial.printf("[http] raw: %.200s\n", raw.c_str());
-        return "";
+    if (err) {
+        USBSerial.printf("[http] JSON parse failed: %s\n", err.c_str());
+        return false;
     }
-
-    int statusEnd = raw.indexOf("\r\n");
-    if (statusEnd > 0) {
-        USBSerial.printf("[http] status: %s\n", raw.substring(0, statusEnd).c_str());
-    }
-
-    String body = raw.substring(bodyStart + 4);
-    raw = String();
-
-    int jsonStart = body.indexOf('{');
-    int jsonEnd = body.lastIndexOf('}');
-    if (jsonStart < 0 || jsonEnd < 0) {
-        USBSerial.printf("[http] no JSON in body (%d bytes): %.200s\n",
-                         body.length(), body.c_str());
-        return "";
-    }
-    return body.substring(jsonStart, jsonEnd + 1);
+    return true;
 }
 
 String nanogpt_client_transcribe(const NanoGptClientConfig &config,
@@ -159,16 +232,8 @@ String nanogpt_client_transcribe(const NanoGptClientConfig &config,
     client.print(closing);
     USBSerial.println("[nanogpt] STT request sent, waiting for response...");
 
-    String body = readJsonHttpResponse(client);
-    if (body.length() == 0) {
-        USBSerial.println("[nanogpt] STT empty response");
-        return "";
-    }
-    USBSerial.printf("[nanogpt] STT body: %.300s\n", body.c_str());
-
     JsonDocument doc;
-    if (deserializeJson(doc, body)) {
-        USBSerial.println("[nanogpt] STT JSON parse failed");
+    if (!deserializeJsonHttpResponse(client, doc)) {
         return "";
     }
 
@@ -184,9 +249,8 @@ String nanogpt_client_transcribe(const NanoGptClientConfig &config,
 }
 
 bool nanogpt_client_post_chat(const char *apiKey, JsonDocument &request, JsonDocument &response) {
-    String reqBody;
-    serializeJson(request, reqBody);
-    USBSerial.printf("[nanogpt] req %d bytes\n", reqBody.length());
+    size_t contentLength = measureJson(request);
+    USBSerial.printf("[nanogpt] req %u bytes\n", (unsigned)contentLength);
 
     WiFiClientSecure client;
     client.setInsecure();
@@ -199,20 +263,11 @@ bool nanogpt_client_post_chat(const char *apiKey, JsonDocument &request, JsonDoc
         "Host: " + NANOGPT_HOST + "\r\n"
         "Authorization: Bearer " + apiKey + "\r\n"
         "Content-Type: application/json\r\n"
-        "Content-Length: " + String(reqBody.length()) + "\r\n"
+        "Content-Length: " + String(contentLength) + "\r\n"
         "Connection: close\r\n\r\n");
-    client.print(reqBody);
-    reqBody = String();
+    serializeJson(request, client);
 
-    String body = readJsonHttpResponse(client);
-    if (body.length() == 0) {
-        USBSerial.println("[nanogpt] empty response");
-        return false;
-    }
-    USBSerial.printf("[nanogpt] body: %.300s\n", body.c_str());
-
-    if (deserializeJson(response, body)) {
-        USBSerial.println("[nanogpt] JSON parse failed");
+    if (!deserializeJsonHttpResponse(client, response)) {
         return false;
     }
     return true;
