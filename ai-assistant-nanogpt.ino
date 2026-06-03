@@ -1,6 +1,6 @@
 /*
  * ai-assistant-nanogpt.ino — standalone NanoGPT voice-to-text assistant
- * Waveshare ESP32-S3-Touch-AMOLED-1.8
+ * Waveshare ESP32-S3-Touch-AMOLED-2.06
  *
  * Hold BOOT to talk; release to get a typed reply.
  * Reads SSID / PASSWORD / NANOGPT_KEY from /setup/setup.txt.
@@ -16,16 +16,14 @@
 #include "XPowersLib.h"
 #include "app_common.h"
 #include "app_nanogpt_assistant.h"
-#include "TouchDrvFT6X36.hpp"
 
 
 Arduino_DataBus *bus = new Arduino_ESP32QSPI(
   LCD_CS, LCD_SCLK, LCD_SDIO0, LCD_SDIO1, LCD_SDIO2, LCD_SDIO3);
-Arduino_SH8601 *gfx = new Arduino_SH8601(
-  bus, GFX_NOT_DEFINED, 0, LCD_WIDTH, LCD_HEIGHT);
+Arduino_OLED *gfx = new Arduino_CO5300(
+  bus, LCD_RESET, 0, LCD_WIDTH, LCD_HEIGHT, 22, 0, 0, 0);
 Arduino_Canvas *g_canvas = nullptr;
 XPowersPMU power;
-TouchDrvFT6X36 touch;
 
 void setup() {
   USBSerial.begin(115200);
@@ -54,9 +52,6 @@ void setup() {
     }
     SD_MMC.end();
   }
-
-  if (!touch.begin(Wire, FT6X36_SLAVE_ADDRESS, IIC_SDA, IIC_SCL))
-    USBSerial.println("FT6X36 init failed");
 
   g_canvas = new Arduino_Canvas(LCD_WIDTH, LCD_HEIGHT, gfx, 0, 0, 0);
   if (!g_canvas->begin()) USBSerial.println("canvas begin failed");

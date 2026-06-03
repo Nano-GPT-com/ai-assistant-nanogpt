@@ -85,7 +85,7 @@ static float    s_locLon         = 0.0f;
 static bool     s_locGeocoded    = false;
 
 // Tools / agent state
-static Arduino_SH8601 *s_gfx     = nullptr; // for set_brightness
+static Arduino_OLED *s_gfx       = nullptr; // for set_brightness
 static SensorQMI8658 s_imu;
 static bool     s_imuOk          = false;
 static bool     s_pendingRestart = false;
@@ -778,7 +778,7 @@ static void draw() {
 }
 
 // ── Setup ───────────────────────────────────────────────────────────────────
-void app_nanogpt_assistant_setup(Arduino_SH8601 *gfx) {
+void app_nanogpt_assistant_setup(Arduino_OLED *gfx) {
     USBSerial.println("[trace] setup() entered — device booted/rebooted");
     canvas       = g_canvas;
     s_gfx        = gfx;
@@ -1048,10 +1048,7 @@ void app_nanogpt_assistant_loop() {
     }
 
     // ── Touch input is fully disabled in this app ─────────────────────────
-    // On this hardware (FT6X36 + SH8601 + AXP2101 on shared buses), any
-    // canvas flush triggered shortly after a touch event reliably hard-resets
-    // the chip. We tried gating, TP_INT, suspending the audio task, removing
-    // printfs — none eliminated it. Pages are now turned with BOOT instead.
+    // BOOT handles paging and talk control, so touch stays off intentionally.
 
 
     // ── Periodic redraw. Most states draw on explicit transitions only; the
