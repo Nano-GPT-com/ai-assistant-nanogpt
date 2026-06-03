@@ -121,6 +121,54 @@ static bool scrollModeActive() {
     return assistant_scroll_active(s_contentH, PAGE_VIEW_H, s_scrollDone);
 }
 
+static int16_t logoScaleX(int16_t originX, int16_t width, int16_t x) {
+    return originX + (int32_t)x * width / 756;
+}
+
+static int16_t logoScaleY(int16_t originY, int16_t height, int16_t y) {
+    return originY + (int32_t)y * height / 779;
+}
+
+static void fillLogoTriangle(int16_t originX, int16_t originY,
+                             int16_t width, int16_t height,
+                             int16_t x0, int16_t y0,
+                             int16_t x1, int16_t y1,
+                             int16_t x2, int16_t y2,
+                             uint16_t color) {
+    canvas->fillTriangle(
+        logoScaleX(originX, width, x0), logoScaleY(originY, height, y0),
+        logoScaleX(originX, width, x1), logoScaleY(originY, height, y1),
+        logoScaleX(originX, width, x2), logoScaleY(originY, height, y2),
+        color);
+}
+
+static void fillLogoQuad(int16_t originX, int16_t originY,
+                         int16_t width, int16_t height,
+                         int16_t x0, int16_t y0,
+                         int16_t x1, int16_t y1,
+                         int16_t x2, int16_t y2,
+                         int16_t x3, int16_t y3,
+                         uint16_t color) {
+    fillLogoTriangle(originX, originY, width, height, x0, y0, x1, y1, x2, y2, color);
+    fillLogoTriangle(originX, originY, width, height, x0, y0, x2, y2, x3, y3, color);
+}
+
+static void drawNanoGptDiamond(int16_t cx, int16_t cy, int16_t size) {
+    const int16_t width = size;
+    const int16_t height = (int32_t)size * 779 / 756;
+    const int16_t x = cx - width / 2;
+    const int16_t y = cy - height / 2;
+
+    fillLogoQuad(x, y, width, height, 0, 327, 125, 178, 224, 224, 152, 405, 0x04B5);
+    fillLogoTriangle(x, y, width, height, 50, 382, 150, 436, 276, 641, 0x0BB5);
+    fillLogoQuad(x, y, width, height, 183, 404, 294, 116, 443, 11, 611, 267, 0x16D7);
+    fillLogoTriangle(x, y, width, height, 183, 404, 611, 267, 294, 116, 0x15F7);
+    fillLogoTriangle(x, y, width, height, 181, 432, 608, 300, 390, 768, 0x04B5);
+    fillLogoTriangle(x, y, width, height, 181, 432, 390, 768, 280, 606, 0x0C36);
+    fillLogoQuad(x, y, width, height, 455, 697, 641, 296, 746, 340, 545, 600, 0x15F7);
+    fillLogoQuad(x, y, width, height, 539, 104, 561, 88, 725, 300, 643, 265, 0x16D7);
+}
+
 static bool recordingMeterNeedsRedraw(uint32_t now) {
     uint32_t recSec = (now - s_recStartMs) / 1000;
     int rmsBucket = s_recRms / 250;
@@ -653,46 +701,9 @@ static void draw() {
         canvas->fillRoundRect(barX, barY, barW, barH, 3, barCol);
     }
 
-    // ── NanoGPT spark (idle + no conversation yet) ───────────────────
-    // Six fat lines radiating from a centre, rounded ends, lightly uneven
-    // angles + lengths so it reads as a hand-drawn asterisk rather than a
-    // perfect compass rose. Drawn by stamping filled circles along each arm.
+    // ── NanoGPT diamond (idle + no conversation yet) ─────────────────
     if (s_state == GS_IDLE && s_userText.length() == 0 && s_agentText.length() == 0) {
-        const int16_t sx = cx;
-        const int16_t sy = LCD_HEIGHT / 2 + 10;
-        const uint16_t coral = 0xCBEC;   // ~ #D97757
-        // Twelve arms — base 30° apart, jittered ±5°. Lengths AND thicknesses
-        // vary so the mark reads as hand-drawn, not a perfect snowflake. Kept
-        // thin so arms stay distinct instead of merging into a disc.
-        struct Arm { float deg; int16_t len; int16_t thick; };
-        static const Arm arms[12] = {
-            {   5.0f, 60, 2 },
-            {  32.0f, 50, 4 },
-            {  63.0f, 56, 2 },
-            {  92.0f, 46, 3 },
-            { 122.0f, 60, 3 },
-            { 154.0f, 48, 2 },
-            { 183.0f, 58, 4 },
-            { 213.0f, 50, 2 },
-            { 245.0f, 62, 3 },
-            { 274.0f, 46, 2 },
-            { 305.0f, 56, 3 },
-            { 333.0f, 50, 4 },
-        };
-        for (int a = 0; a < 12; a++) {
-            const float rad = arms[a].deg * 0.01745329f;
-            const float dx  = cosf(rad);
-            const float dy  = sinf(rad);
-            const int   len = arms[a].len;
-            const int   t   = arms[a].thick;
-            for (int k = 0; k <= len; k++) {
-                int x = sx + (int)(k * dx);
-                int y = sy + (int)(k * dy);
-                canvas->fillCircle(x, y, t, coral);
-            }
-        }
-        // Centre disc — a touch thicker than the arms.
-        canvas->fillCircle(sx, sy, 6, coral);
+        drawNanoGptDiamond(cx, LCD_HEIGHT / 2 + 4, 132);
 
         // Tool-status label, vertically aligned with the PWR pill on the right
         // edge (PWR is what the user uses to toggle). Reflects current state.
