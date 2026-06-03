@@ -782,7 +782,6 @@ static void draw() {
     // BOOT does paging via its pill label switching to "page").
     {
         draw_watermark_g(canvas, LCD_WIDTH, LCD_HEIGHT);
-        draw_mic_pill(canvas, LCD_WIDTH, LCD_HEIGHT);
     }
     canvas->flush();
     s_lastDraw = millis();
