@@ -8,6 +8,7 @@
 #include "HWCDC.h"
 
 #define HTTP_TIMEOUT_MS 30000
+#define STT_TIMEOUT_MS 120000
 #define BOUNDARY "----ESP32Bnd9a7f3c"
 
 extern USBCDC USBSerial;
@@ -90,9 +91,13 @@ private:
     }
 };
 
-static bool readHttpHeaders(WiFiClientSecure &client, bool &chunked) {
+static bool readHttpHeaders(WiFiClientSecure &client,
+                            bool &chunked,
+                            int &statusCode,
+                            uint32_t timeoutMs,
+                            String &errorOut) {
     uint32_t start = millis();
-    while (!client.available() && client.connected() && millis() - start < HTTP_TIMEOUT_MS) {
+    while (!client.available() && client.connected() && millis() - start < timeoutMs) {
         delay(10);
     }
 
@@ -100,9 +105,17 @@ static bool readHttpHeaders(WiFiClientSecure &client, bool &chunked) {
     status.trim();
     if (status.length() == 0) {
         USBSerial.println("[http] empty status line");
+        errorOut = "No response from NanoGPT";
         return false;
     }
     USBSerial.printf("[http] status: %s\n", status.c_str());
+    statusCode = 0;
+    if (status.startsWith("HTTP/")) {
+        int firstSpace = status.indexOf(' ');
+        if (firstSpace >= 0) {
+            statusCode = status.substring(firstSpace + 1, firstSpace + 4).toInt();
+        }
+    }
 
     chunked = false;
     for (;;) {
@@ -118,9 +131,13 @@ static bool readHttpHeaders(WiFiClientSecure &client, bool &chunked) {
     return true;
 }
 
-static bool deserializeJsonHttpResponse(WiFiClientSecure &client, JsonDocument &doc) {
+static bool deserializeJsonHttpResponse(WiFiClientSecure &client,
+                                        JsonDocument &doc,
+                                        uint32_t timeoutMs,
+                                        String &errorOut) {
     bool chunked = false;
-    if (!readHttpHeaders(client, chunked)) {
+    int statusCode = 0;
+    if (!readHttpHeaders(client, chunked, statusCode, timeoutMs, errorOut)) {
         client.stop();
         return false;
     }
@@ -136,6 +153,19 @@ static bool deserializeJsonHttpResponse(WiFiClientSecure &client, JsonDocument &
 
     if (err) {
         USBSerial.printf("[http] JSON parse failed: %s\n", err.c_str());
+        errorOut = String("Bad NanoGPT response: ") + err.c_str();
+        return false;
+    }
+    if (statusCode < 200 || statusCode >= 300) {
+        const char *errMsg = doc["error"]["message"] | doc["message"] | (const char *)nullptr;
+        if (errMsg && errMsg[0]) {
+            errorOut = errMsg;
+        } else if (statusCode > 0) {
+            errorOut = String("NanoGPT HTTP ") + statusCode;
+        } else {
+            errorOut = "NanoGPT HTTP error";
+        }
+        USBSerial.printf("[http] non-2xx response: %s\n", errorOut.c_str());
         return false;
     }
     return true;
@@ -180,12 +210,12 @@ String nanogpt_client_transcribe(const NanoGptClientConfig &config,
 
     WiFiClientSecure client;
     client.setInsecure();
-    client.setTimeout(HTTP_TIMEOUT_MS / 1000);
+    client.setTimeout(STT_TIMEOUT_MS / 1000);
 
     USBSerial.println("[nanogpt] STT connecting...");
     if (!client.connect(NANOGPT_HOST, NANOGPT_PORT)) {
         USBSerial.println("[nanogpt] STT connect failed");
-        return "";
+        return "STT error: connect failed";
     }
     USBSerial.println("[nanogpt] STT connected, sending request...");
 
@@ -215,7 +245,7 @@ String nanogpt_client_transcribe(const NanoGptClientConfig &config,
             if (written == 0) {
                 USBSerial.println("[nanogpt] STT write failed");
                 client.stop();
-                return "";
+                return "STT error: upload failed";
             }
         }
         sent += written;
@@ -233,8 +263,9 @@ String nanogpt_client_transcribe(const NanoGptClientConfig &config,
     USBSerial.println("[nanogpt] STT request sent, waiting for response...");
 
     JsonDocument doc;
-    if (!deserializeJsonHttpResponse(client, doc)) {
-        return "";
+    String httpError;
+    if (!deserializeJsonHttpResponse(client, doc, STT_TIMEOUT_MS, httpError)) {
+        return String("STT error: ") + httpError;
     }
 
     const char *errMsg = doc["error"]["message"] | (const char *)nullptr;
@@ -245,6 +276,9 @@ String nanogpt_client_transcribe(const NanoGptClientConfig &config,
 
     String text = doc["text"] | "";
     USBSerial.printf("[nanogpt] STT result: '%s'\n", text.c_str());
+    if (text.length() == 0) {
+        return "STT error: empty transcript";
+    }
     return text;
 }
 
@@ -267,7 +301,9 @@ bool nanogpt_client_post_chat(const char *apiKey, JsonDocument &request, JsonDoc
         "Connection: close\r\n\r\n");
     serializeJson(request, client);
 
-    if (!deserializeJsonHttpResponse(client, response)) {
+    String httpError;
+    if (!deserializeJsonHttpResponse(client, response, HTTP_TIMEOUT_MS, httpError)) {
+        USBSerial.printf("[nanogpt] chat response failed: %s\n", httpError.c_str());
         return false;
     }
     return true;
