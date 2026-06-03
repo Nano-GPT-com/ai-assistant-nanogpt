@@ -171,6 +171,62 @@ static bool deserializeJsonHttpResponse(WiFiClientSecure &client,
     return true;
 }
 
+static bool writeClientBytes(WiFiClientSecure &client,
+                             const uint8_t *data,
+                             uint32_t length,
+                             const char *label,
+                             String &errorOut) {
+    uint32_t sent = 0;
+    uint32_t stalledSince = 0;
+
+    while (sent < length) {
+        if (!client.connected()) {
+            errorOut = String(label) + " socket closed";
+            USBSerial.printf("[nanogpt] %s socket closed at %u/%u\n", label, sent, length);
+            return false;
+        }
+
+        uint32_t chunk = length - sent;
+        if (chunk > 1024) chunk = 1024;
+
+        size_t written = client.write(data + sent, chunk);
+        if (written == 0) {
+            if (stalledSince == 0) {
+                stalledSince = millis();
+                USBSerial.printf("[nanogpt] %s write stall at %u/%u\n", label, sent, length);
+            }
+            if (millis() - stalledSince > 8000) {
+                errorOut = String(label) + " stalled";
+                USBSerial.printf("[nanogpt] %s write stalled too long at %u/%u\n", label, sent, length);
+                return false;
+            }
+            delay(25);
+            yield();
+            continue;
+        }
+
+        stalledSince = 0;
+        sent += (uint32_t)written;
+        if ((sent % 32768) == 0 || sent == length) {
+            USBSerial.printf("[nanogpt] %s upload %u/%u\n", label, sent, length);
+            delay(1);
+            yield();
+        }
+    }
+    return true;
+}
+
+static bool writeClientString(WiFiClientSecure &client,
+                              const String &value,
+                              const char *label,
+                              String &errorOut) {
+    return writeClientBytes(client,
+                            (const uint8_t *)value.c_str(),
+                            (uint32_t)value.length(),
+                            label,
+                            errorOut);
+}
+
 String nanogpt_client_transcribe(const NanoGptClientConfig &config,
                                  const int16_t *pcm,
                                  uint32_t numSamples,
@@ -225,41 +281,33 @@ String nanogpt_client_transcribe(const NanoGptClientConfig &config,
         "Content-Type: multipart/form-data; boundary=" + BOUNDARY + "\r\n"
         "Content-Length: " + String(contentLen) + "\r\n"
         "Connection: close\r\n\r\n";
-    client.print(headers);
-
-    client.print(part1hdr);
+    String uploadError;
+    if (!writeClientString(client, headers, "STT headers", uploadError) ||
+        !writeClientString(client, part1hdr, "STT file header", uploadError)) {
+        client.stop();
+        return String("STT error: ") + uploadError;
+    }
 
     uint8_t wavHdr[WAV_HEADER_SIZE];
     wav_build_pcm16_mono_header(wavHdr, pcmBytes, sampleRate);
-    client.write(wavHdr, WAV_HEADER_SIZE);
-
-    uint32_t sent = 0;
-    while (sent < pcmBytes) {
-        uint32_t chunk = pcmBytes - sent;
-        if (chunk > 4096) chunk = 4096;
-        size_t written = client.write(((const uint8_t *)pcm) + sent, chunk);
-        if (written == 0) {
-            USBSerial.printf("[nanogpt] STT write stall at %u/%u\n", sent, pcmBytes);
-            delay(50);
-            written = client.write(((const uint8_t *)pcm) + sent, chunk);
-            if (written == 0) {
-                USBSerial.println("[nanogpt] STT write failed");
-                client.stop();
-                return "STT error: upload failed";
-            }
-        }
-        sent += written;
-        if ((sent % 32768) == 0) {
-            delay(1);
-            USBSerial.printf("[nanogpt] STT upload %u/%u\n", sent, pcmBytes);
-        }
+    if (!writeClientBytes(client, wavHdr, WAV_HEADER_SIZE, "STT wav header", uploadError)) {
+        client.stop();
+        return String("STT error: ") + uploadError;
     }
-    USBSerial.printf("[nanogpt] STT upload done: %u/%u bytes\n", sent, pcmBytes);
 
-    client.print(part1end);
-    client.print(part2);
-    client.print(part3);
-    client.print(closing);
+    if (!writeClientBytes(client, (const uint8_t *)pcm, pcmBytes, "STT audio", uploadError)) {
+        client.stop();
+        return String("STT error: ") + uploadError;
+    }
+    USBSerial.printf("[nanogpt] STT audio upload done: %u bytes\n", pcmBytes);
+
+    if (!writeClientString(client, part1end, "STT file end", uploadError) ||
+        !writeClientString(client, part2, "STT model", uploadError) ||
+        !writeClientString(client, part3, "STT language", uploadError) ||
+        !writeClientString(client, closing, "STT closing", uploadError)) {
+        client.stop();
+        return String("STT error: ") + uploadError;
+    }
     USBSerial.println("[nanogpt] STT request sent, waiting for response...");
 
     JsonDocument doc;
